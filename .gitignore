@@ -1,5 +1,7 @@
+.env
 bin/
 web/dist/
 web/node_modules/
 *.db
 *.db-journal
+.idea/

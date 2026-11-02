@@ -88,6 +88,7 @@ export interface Settings {
   dbPath: string;
   activePath: string;
   configPath: string;
+  docker: boolean;
 }
 
 export class ApiError extends Error {

@@ -92,6 +92,7 @@ type Store struct {
 	db       *sql.DB
 	path     string
 	filesDir string
+	release  func() // gives up the lease, set by OpenAs
 }
 
 // Open opens the database, creating it and applying migrations as needed.
@@ -123,7 +124,14 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
-func (s *Store) Close() error     { return s.db.Close() }
+func (s *Store) Close() error {
+	err := s.db.Close()
+	if s.release != nil {
+		s.release()
+	}
+	return err
+}
+
 func (s *Store) Path() string     { return s.path }
 func (s *Store) FilesDir() string { return s.filesDir }
 

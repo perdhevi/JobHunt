@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"jobhunt/internal/config"
@@ -285,6 +286,7 @@ type settingsDTO struct {
 	DBPath     string `json:"dbPath"`     // saved path, applies from next start
 	ActivePath string `json:"activePath"` // path in use right now
 	ConfigPath string `json:"configPath"`
+	Docker     bool   `json:"docker"`
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -303,7 +305,13 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, settingsDTO{Email: email, DBPath: cfg.DBPath, ActivePath: s.Store.Path(), ConfigPath: cp})
+	writeJSON(w, http.StatusOK, settingsDTO{
+		Email:      email,
+		DBPath:     cfg.DBPath,
+		ActivePath: config.HostPath(s.Store.Path()),
+		ConfigPath: cp,
+		Docker:     os.Getenv(config.EnvHostDrive) != "",
+	})
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {

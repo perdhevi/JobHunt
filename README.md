@@ -8,12 +8,66 @@ A local kanban board for job applications, with an MCP server so any AI harness 
 
 ## Run it
 
+In Docker, which needs only Docker Desktop:
+
 ```powershell
-.\scripts\build.ps1                 # needs Go and Node
-.\bin\jobhunt.exe serve --open      # http://127.0.0.1:8787
+.\scripts\docker-up.ps1 -Build      # http://127.0.0.1:8787
+```
+
+Or directly on Windows, which needs Go and Node:
+
+```powershell
+.\scripts\build.ps1
+.\bin\jobhunt.exe serve --open
+```
+
+Pick one. See [Running in Docker](#running-in-docker) for why they can't run together.
+
+## Running in Docker
+
+Run `.\scripts\docker-up.ps1` to start jobhunt, adding `-Build` after changing the code. Stop it with `docker compose down`. The board and MCP are published on loopback only.
+
+**Run the script again after Docker Desktop or Google Drive restarts.** Docker Desktop doesn't share Google Drive's virtual drive with containers, so the script mounts it inside Docker's VM, and that mount doesn't survive a restart. A plain `docker compose up` skips this step. jobhunt then refuses to start, because Docker would otherwise give it an empty disk and a database there would never reach Drive.
+
+### Change the database path
+
+The container mounts the whole drive, so paths stay in the Windows form you see in Explorer. Set the path under **Settings** in the UI, or:
+
+```powershell
+docker compose exec jobhunt jobhunt config set-db "G:\My Drive\JobHunt\jobhunt.db"
+docker compose restart jobhunt
+```
+
+The default is `<drive>:\My Drive\JobHunt\jobhunt.db`. The saved path lives in the `config` Docker volume, separately from the Windows `%AppData%` config.
+
+If Drive is on a different letter, pass it once and it's remembered in `.env`, then update the path as above:
+
+```powershell
+.\scripts\docker-up.ps1 -Drive H
+```
+
+### Never run Docker and Windows at once
+
+SQLite's locks don't cross from Windows into a container. In testing, writing from both at once corrupted the database. To prevent that, each side keeps a `jobhunt.db.docker.lease` or `.windows.lease` file beside the database and refuses to open while the other side is active. After a crash, the lease clears within 30 seconds.
+
+While Docker is running, MCP clients must connect over HTTP, not by starting `jobhunt.exe`. An old stdio entry fails with a clear error. Use `http://127.0.0.1:8787/mcp`, or for stdio-only clients:
+
+```json
+{ "mcpServers": { "jobhunt": { "command": "docker", "args": ["exec", "-i", "jobhunt", "jobhunt", "mcp"] } } }
+```
+
+To import a backup, copy it to the drive and run `docker compose exec jobhunt jobhunt import "/drive/My Drive/backup.json"`.
+
+For a remote MCP listener, add these to `.env` instead of `config.json`, then run the script again. See [Connect an AI harness](#connect-an-ai-harness) for tunnel rules.
+
+```
+JOBHUNT_REMOTE_LISTEN=0.0.0.0:8788
+JOBHUNT_REMOTE_TOKEN=<at least 24 random characters>
 ```
 
 ## Choose the database location
+
+This section covers running on Windows. For Docker, see [Change the database path](#change-the-database-path).
 
 The path lives in `%AppData%\JobHunt\config.json`, per machine, because a Drive letter can differ between computers.
 
@@ -31,6 +85,7 @@ SQLite on a synced folder is safe only within these limits:
 - **Use one computer at a time.** Drive syncs whole files and doesn't understand SQLite locks. Writing from two machines before sync finishes produces a conflicted copy such as `jobhunt (1).db`, and neither copy has both sets of changes. Stop jobhunt and let Drive finish syncing before switching machines.
 - **Several programs on one computer is fine.** The board and any number of MCP clients can run together. This was tested on a real `G:` mount with two processes writing at once.
 - **Don't open the `.db` from the Drive website**, and don't delete `jobhunt.db-journal`.
+- **Docker is a different case.** Several programs on one computer stops being safe if some are in Docker and some on Windows. The lease described under [Running in Docker](#never-run-docker-and-windows-at-once) blocks that.
 
 The database uses `journal_mode=TRUNCATE`, not WAL. WAL keeps committed rows in a side file that Drive would sync separately from the `.db`, so the uploaded copy could be stale.
 
@@ -40,7 +95,9 @@ Attachments keep their real extension on disk because Drive for Desktop renames 
 
 The same tools are available over two transports.
 
-**Local stdio.** The client starts jobhunt itself, and the board doesn't need to be running. This suits Claude Code, Claude Desktop, Cursor and similar tools. Claude Code picks up [.mcp.json](.mcp.json) in this folder. To add it everywhere:
+**Local HTTP.** While the board runs, in Docker or on Windows, any streamable-HTTP client on this machine can use `http://127.0.0.1:8787/mcp`. Claude Code picks this up from [.mcp.json](.mcp.json) in this folder.
+
+**Local stdio.** The client starts jobhunt itself, and the board doesn't need to be running. This suits Claude Desktop, Cursor and similar tools on a Windows setup. With Docker, use the `docker exec` entry above instead. To add it everywhere:
 
 ```bash
 claude mcp add --scope user jobhunt -- "C:\temp\JobHunt\bin\jobhunt.exe" mcp
@@ -51,8 +108,6 @@ Claude Desktop, in `claude_desktop_config.json`:
 ```json
 { "mcpServers": { "jobhunt": { "command": "C:\\temp\\JobHunt\\bin\\jobhunt.exe", "args": ["mcp"] } } }
 ```
-
-**Local HTTP.** While `jobhunt serve` runs, any streamable-HTTP client on this machine can use `http://127.0.0.1:8787/mcp`.
 
 **ChatGPT and other cloud clients.** These connect from the vendor's servers, so they can't reach `127.0.0.1`. Add a dedicated listener to `config.json`, then point an HTTPS tunnel at that port only:
 

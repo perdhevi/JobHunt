@@ -1,0 +1,25 @@
+# Start this with scripts\docker-up.ps1, which first exposes the drive to Docker.
+# Google Drive's virtual drive isn't shared with Docker Desktop automatically.
+services:
+  jobhunt:
+    build: .
+    image: jobhunt:local
+    container_name: jobhunt
+    init: true
+    ports:
+      # Loopback only. Host and Origin checks assume nothing else can reach the UI.
+      - "127.0.0.1:8787:8787"
+      - "127.0.0.1:8788:8788"
+    environment:
+      JOBHUNT_HOST_DRIVE: ${JOBHUNT_DRIVE:?run scripts\docker-up.ps1}
+      JOBHUNT_DEFAULT_DB: ${JOBHUNT_DRIVE}:\My Drive\JobHunt\jobhunt.db
+      JOBHUNT_REMOTE_LISTEN: ${JOBHUNT_REMOTE_LISTEN:-}
+      JOBHUNT_REMOTE_TOKEN: ${JOBHUNT_REMOTE_TOKEN:-}
+    volumes:
+      - type: bind
+        source: ${JOBHUNT_DRIVE}:\
+        target: /drive
+      - config:/config
+
+volumes:
+  config:

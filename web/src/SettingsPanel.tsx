@@ -5,6 +5,7 @@ export function SettingsPanel({ settings, onClose, onSaved }: { settings: Settin
   const [email, setEmail] = useState(settings.email);
   const [dbPath, setDbPath] = useState(settings.dbPath);
   const [msg, setMsg] = useState({ text: "", err: false });
+  const restart = settings.docker ? "docker compose restart" : "jobhunt";
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -12,7 +13,7 @@ export function SettingsPanel({ settings, onClose, onSaved }: { settings: Settin
       const s = await api.saveSettings({ email, dbPath });
       onSaved(s);
       setDbPath(s.dbPath);
-      setMsg({ text: s.dbPath === s.activePath ? "Saved." : "Saved. Restart jobhunt to switch databases.", err: false });
+      setMsg({ text: s.dbPath === s.activePath ? "Saved." : `Saved. Restart ${restart} to switch databases.`, err: false });
     } catch (err) {
       setMsg({ text: err instanceof Error ? err.message : "Couldn't save.", err: true });
     }
@@ -30,7 +31,7 @@ export function SettingsPanel({ settings, onClose, onSaved }: { settings: Settin
         <div className="f">
           <label>In use now</label>
           <code className="path">{settings.activePath}</code>
-          {settings.dbPath !== settings.activePath && <span className="status err">Restart jobhunt to apply the saved path.</span>}
+          {settings.dbPath !== settings.activePath && <span className="status err">Restart {restart} to apply the saved path.</span>}
         </div>
         <div className="f">
           <label htmlFor="s-email">Base email</label>

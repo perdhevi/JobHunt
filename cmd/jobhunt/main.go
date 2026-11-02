@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -71,7 +72,11 @@ func openStore() (*store.Store, config.Config, error) {
 	if err != nil {
 		return nil, cfg, err
 	}
-	s, err := store.Open(p)
+	side := store.SideWindows
+	if os.Getenv(config.EnvHostDrive) != "" {
+		side = store.SideDocker
+	}
+	s, err := store.OpenAs(config.LocalPath(p), side)
 	return s, cfg, err
 }
 
@@ -96,7 +101,7 @@ func serve(args []string) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM) // docker stop sends SIGTERM
 	defer stop()
 	errs := make(chan error, 2)
 	go func() { errs <- srv.ListenAndServe() }()

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -17,7 +18,16 @@ const (
 	EnvConfig = "JOBHUNT_CONFIG" // overrides the config file location
 	EnvDB     = "JOBHUNT_DB"     // overrides dbPath without touching the file
 
+	// Set by compose.yaml. dbPath stays a Windows path so it can be edited as
+	// the user sees it, and EnvHostDrive says which drive is mounted at DriveMount.
+	EnvHostDrive    = "JOBHUNT_HOST_DRIVE"
+	EnvDefaultDB    = "JOBHUNT_DEFAULT_DB"    // used until a dbPath is saved
+	EnvListen       = "JOBHUNT_LISTEN"        // overrides listen
+	EnvRemoteListen = "JOBHUNT_REMOTE_LISTEN" // overrides remoteMcp.listen
+	EnvRemoteToken  = "JOBHUNT_REMOTE_TOKEN"  // overrides remoteMcp.token
+
 	DefaultListen = "127.0.0.1:8787"
+	DriveMount    = "/drive"
 )
 
 type Config struct {
@@ -65,11 +75,23 @@ func Load() (Config, error) {
 	case !errors.Is(err, os.ErrNotExist):
 		return c, err
 	}
+	if v := os.Getenv(EnvListen); v != "" {
+		c.Listen = v
+	}
 	if c.Listen == "" {
 		c.Listen = DefaultListen
 	}
+	if v := os.Getenv(EnvRemoteListen); v != "" {
+		c.RemoteMCP.Listen = v
+	}
+	if v := os.Getenv(EnvRemoteToken); v != "" {
+		c.RemoteMCP.Token = v
+	}
 	if v := os.Getenv(EnvDB); v != "" {
 		c.DBPath = v
+	}
+	if c.DBPath == "" {
+		c.DBPath = os.Getenv(EnvDefaultDB)
 	}
 	if c.DBPath == "" {
 		dir, err := os.UserConfigDir()
@@ -109,6 +131,9 @@ func ValidateDBPath(p string) (string, error) {
 	if p == "" {
 		return "", errors.New("database path is empty")
 	}
+	if drive := os.Getenv(EnvHostDrive); drive != "" {
+		return validateDrivePath(p, drive)
+	}
 	if !filepath.IsAbs(p) {
 		return "", fmt.Errorf("database path must be absolute: %s", p)
 	}
@@ -122,4 +147,80 @@ func ValidateDBPath(p string) (string, error) {
 		}
 	}
 	return p, nil
+}
+
+// LocalPath turns a validated dbPath into the path this process opens. They
+// differ only in a container, where the Windows drive is mounted at DriveMount.
+func LocalPath(p string) string {
+	drive := os.Getenv(EnvHostDrive)
+	if drive == "" {
+		return p
+	}
+	local, err := driveToLocal(p, drive)
+	if err != nil {
+		return p
+	}
+	return local
+}
+
+// HostPath is the reverse of LocalPath, for showing the user a path they know.
+func HostPath(local string) string {
+	drive := os.Getenv(EnvHostDrive)
+	rest, ok := strings.CutPrefix(local, DriveMount+"/")
+	if drive == "" || !ok {
+		return local
+	}
+	return strings.ToUpper(drive[:1]) + `:\` + strings.ReplaceAll(rest, "/", `\`)
+}
+
+func driveToLocal(p, drive string) (string, error) {
+	p = strings.ReplaceAll(p, `\`, "/")
+	if len(p) < 3 || p[1] != ':' || p[2] != '/' {
+		return "", fmt.Errorf(`database path must start with %s:\ : %s`, strings.ToUpper(drive[:1]), p)
+	}
+	if !strings.EqualFold(p[:1], drive[:1]) {
+		return "", fmt.Errorf(`only %s: is mounted. To use %s:, run scripts\docker-up.ps1 -Drive %s`,
+			strings.ToUpper(drive[:1]), strings.ToUpper(p[:1]), strings.ToUpper(p[:1]))
+	}
+	local := path.Clean(DriveMount + "/" + p[3:])
+	if !strings.HasPrefix(local, DriveMount+"/") {
+		return "", fmt.Errorf("database path is outside the drive: %s", p)
+	}
+	return local, nil
+}
+
+// validateDrivePath refuses to run on Docker's fallback disk. When a bind source
+// isn't shared, Docker mounts an empty folder from its own VM without any error,
+// and a database created there would look fine but never reach Google Drive.
+func validateDrivePath(p, drive string) (string, error) {
+	local, err := driveToLocal(p, drive)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return "", err
+	}
+	if !isSharedDrive(string(info), DriveMount) {
+		return "", fmt.Errorf(`drive %s: isn't shared with this container. Run scripts\docker-up.ps1`, strings.ToUpper(drive[:1]))
+	}
+	if fi, err := os.Stat(local); err == nil && fi.IsDir() {
+		return "", fmt.Errorf("database path is a folder, expected a file: %s", HostPath(local))
+	}
+	return HostPath(local), nil
+}
+
+// isSharedDrive reports whether mount is a filesystem passed in from Windows,
+// as opposed to a disk inside the Docker VM.
+func isSharedDrive(mountinfo, mount string) bool {
+	for _, line := range strings.Split(mountinfo, "\n") {
+		before, after, ok := strings.Cut(line, " - ")
+		fields := strings.Fields(before)
+		if !ok || len(fields) < 5 || fields[4] != mount {
+			continue
+		}
+		fstype, _, _ := strings.Cut(after, " ")
+		return fstype == "9p" || fstype == "virtiofs" || fstype == "drvfs" || strings.HasPrefix(fstype, "fuse")
+	}
+	return false
 }
