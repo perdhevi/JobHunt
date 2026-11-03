@@ -1,6 +1,7 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "jobhunt", "runtimeExecutable": "bin/jobhunt.exe", "runtimeArgs": ["serve"], "port": 8787 }
+    { "name": "jobhunt", "runtimeExecutable": "bin/jobhunt.exe", "runtimeArgs": ["serve"], "port": 8787 },
+    { "name": "web-dev", "runtimeExecutable": "npm", "runtimeArgs": ["--prefix", "web", "run", "dev", "--", "--port", "5173", "--strictPort"], "port": 5173 }
   ]
 }

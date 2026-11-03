@@ -41,17 +41,22 @@ function Column({ id, name, count, children }: { id: string; name: string; count
 function Card({ a, docs, onOpen }: { a: Application; docs: Doc[]; onOpen: (id: string) => void }) {
   const { setNodeRef, listeners, attributes, isDragging } = useDraggable({ id: a.id });
   return (
-    <button
+    <div
       ref={setNodeRef}
-      type="button"
       className={"card" + (isDragging ? " dragging" : "")}
       onClick={() => onOpen(a.id)}
+      onKeyDown={(e) => {
+        if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          onOpen(a.id);
+        }
+      }}
       {...listeners}
       {...attributes}
       role="button"
     >
       <CardBody a={a} docs={docs} />
-    </button>
+    </div>
   );
 }
 
@@ -62,9 +67,25 @@ export function CardBody({ a, docs }: { a: Application; docs: Doc[] }) {
   const resume = docName(docs, a.resumeId);
   return (
     <>
-      <div>
-        <div className="co">{a.company}</div>
-        <div className="ro">{a.role}</div>
+      <div className="card-h">
+        <div>
+          <div className="co">{a.company}</div>
+          <div className="ro">{a.role}</div>
+        </div>
+        {a.url && (
+          <a
+            className="post-link"
+            href={a.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open job post"
+            aria-label={`Open job post for ${a.company}`}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            ↗
+          </a>
+        )}
       </div>
       <div className="chips">
         <span className={"chip " + (a.track === "fulltime" ? "ft" : "up")}>{a.track === "fulltime" ? "Full-time" : "Contract"}</span>
