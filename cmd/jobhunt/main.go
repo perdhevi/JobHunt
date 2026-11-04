@@ -109,6 +109,9 @@ func serve(args []string) error {
 	var remoteSrv *http.Server
 	if rc := cfg.RemoteMCP; rc.Listen != "" {
 		opts := remote.Options{PublicURL: rc.PublicURL, Password: rc.Password, Token: rc.Token}
+		if rc.Board {
+			opts.Board = (&api.Server{Store: s, Config: cfg, UI: ui}).Routes()
+		}
 		if opts.OAuth() {
 			if opts.Secret, err = config.AuthSecret(); err != nil {
 				return err
@@ -121,6 +124,9 @@ func serve(args []string) error {
 		go func() { errs <- remoteSrv.ListenAndServe() }()
 		if opts.OAuth() {
 			log.Printf("remote MCP %s/mcp (OAuth, listening on %s)", strings.TrimSuffix(rc.PublicURL, "/"), rc.Listen)
+			if rc.Board {
+				log.Printf("remote board %s (password sign-in)", strings.TrimSuffix(rc.PublicURL, "/"))
+			}
 		} else {
 			log.Printf("remote MCP on http://%s/mcp/<token>", rc.Listen)
 		}

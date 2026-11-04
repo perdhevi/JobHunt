@@ -110,7 +110,7 @@ Claude Desktop, in `claude_desktop_config.json`:
 { "mcpServers": { "jobhunt": { "command": "C:\\temp\\JobHunt\\bin\\jobhunt.exe", "args": ["mcp"] } } }
 ```
 
-**Remote, with a login.** Claude (web, Desktop and mobile), ChatGPT and other cloud clients connect from the vendor's servers, so they need a public HTTPS address. jobhunt opens a second listener for them that serves only MCP and asks for a password through OAuth, which is how those clients sign in. A proxy or tunnel pointed at it can't reach the UI or REST API. The simplest setup is [a VPS](#deploy-to-a-vps). To run it yourself, add this to `config.json` and point an HTTPS tunnel at port 8788 only, never at 8787:
+**Remote, with a login.** Claude (web, Desktop and mobile), ChatGPT and other cloud clients connect from the vendor's servers, so they need a public HTTPS address. jobhunt opens a second listener for them that serves MCP and asks for a password through OAuth, which is how those clients sign in. A proxy or tunnel pointed at it can't reach the UI or REST API unless you turn the board on, below. The simplest setup is [a VPS](#deploy-to-a-vps). To run it yourself, add this to `config.json` and point an HTTPS tunnel at port 8788 only, never at 8787:
 
 ```json
 "remoteMcp": { "listen": "127.0.0.1:8788", "publicUrl": "https://<your-domain>", "password": "<at least 12 characters>" }
@@ -124,68 +124,13 @@ Then add the connector with the URL `https://<your-domain>/mcp`. Each client sho
 
 Apps stay signed in for 90 days of disuse, across restarts. Changing the password signs every app out. So does deleting `auth.secret`, which jobhunt creates beside `config.json` to sign its tokens. After five wrong passwords from one address, the sign-in page refuses that address for 15 minutes.
 
+To use the board through the same address, add `"board": true` to `remoteMcp` (`JOBHUNT_REMOTE_BOARD=true` in `.env`). `https://<your-domain>/` then shows a sign-in page asking for the same password, and keeps the browser signed in for 30 days. Sign out from the board's header. Changing the password signs the browser out too.
+
 For a client that can send a header but can't do OAuth, also set `"token"` (at least 24 characters) and send `Authorization: Bearer <token>`. A token on its own, without `publicUrl` and `password`, still works as before, including the `/mcp/<token>` URL form. Treat either as a password: anyone holding it can read and change your pipeline.
 
 ### Deploy to a VPS
 
-[deploy/](deploy) runs jobhunt with Caddy, which gets an HTTPS certificate automatically. You need a Linux VPS with Docker and a domain whose DNS points at it, with ports 80 and 443 open.
-
-```bash
-git clone <this repo> jobhunt && cd jobhunt/deploy
-cp .env.example .env    # set JOBHUNT_DOMAIN and JOBHUNT_AUTH_PASSWORD
-docker compose up -d --build
-```
-
-Check `https://<domain>/.well-known/oauth-authorization-server` loads, then connect your apps as above. Only the MCP listener is public. The board has no login, so it's published on the VPS's loopback only. Open it through an SSH tunnel at http://127.0.0.1:8787:
-
-```bash
-ssh -N -L 8787:127.0.0.1:8787 <user>@<vps>
-```
-
-The database lives in the `data` volume on the VPS, not on Google Drive. Once it's running, use the VPS from every machine, including Claude Code, and stop the local copy, or the two will drift apart. To move your existing data, stop jobhunt locally, copy `jobhunt.db` and the `attachments` folder into an empty folder on the VPS, and from that folder run:
-
-```bash
-docker compose -f ~/jobhunt/deploy/compose.yaml stop jobhunt
-docker compose -f ~/jobhunt/deploy/compose.yaml run --rm --no-deps --user root -v "$PWD:/in:ro" --entrypoint sh jobhunt -c 'cp -r /in/. /data/ && chown -R 1000:1000 /data'
-docker compose -f ~/jobhunt/deploy/compose.yaml start jobhunt
-```
-
-#### Sharing the VPS with other apps
-
-Only one program can serve ports 80 and 443, so with several apps, run one Caddy for all of them, outside this repo, and give each app its own subdomain. Point each subdomain's DNS at the VPS. In `deploy/.env`, remove the `COMPOSE_PROFILES=caddy` line, then run `docker compose up -d --remove-orphans` to stop the bundled Caddy. jobhunt stays reachable from the VPS itself at `127.0.0.1:8788`.
-
-Put the shared Caddy in its own folder, such as `~/proxy`, with this `compose.yaml`. Host networking lets it reach every app on `127.0.0.1`:
-
-```yaml
-services:
-  caddy:
-    image: caddy:2.10-alpine
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-volumes:
-  caddy_data:
-  caddy_config:
-```
-
-And a `Caddyfile` with one block per app. Publish each app's port on `127.0.0.1` only, as jobhunt does, so the proxy is the only way in:
-
-```
-jobhunt.example.com {
-	reverse_proxy 127.0.0.1:8788
-}
-
-otherapp.example.com {
-	reverse_proxy 127.0.0.1:3000
-}
-```
-
-Start it with `docker compose up -d` in that folder. After editing the `Caddyfile`, apply it with `docker compose exec -w /etc/caddy caddy caddy reload`.
-
-To update, `git pull` and run `docker compose up -d --build` again. Back up by copying the `data` volume, for example with `docker compose cp jobhunt:/data ./backup`.
+[DEPLOYMENT.md](DEPLOYMENT.md) walks through running jobhunt on a VPS with HTTPS, a sign-in for the board, and room for other apps on the same server. The files it uses are in [deploy/](deploy).
 
 ### Tools
 
@@ -244,7 +189,7 @@ cd web; npm run dev         # UI with hot reload, proxied to the API
 | Path | Holds |
 |---|---|
 | `cmd/jobhunt` | CLI and server startup |
-| `internal/remote` | Remote MCP listener and its OAuth sign-in |
+| `internal/remote` | Remote listener: MCP with OAuth, and the board behind a sign-in |
 | `internal/store` | Schema, rules, duplicate detection. Every writer goes through here. |
 | `internal/api` | REST API and loopback protection |
 | `internal/mcpserver` | MCP tools |

@@ -1,7 +1,8 @@
-// Package remote is the internet-facing MCP listener. It serves MCP and a small
+// Package remote is the internet-facing listener. It serves MCP and a small
 // OAuth 2.1 authorization server, which is what Claude and ChatGPT connectors
 // expect: discovery (RFC 9728, RFC 8414), dynamic client registration (RFC 7591),
-// a password login page and PKCE. It never serves the UI or REST API.
+// a password login page and PKCE. It serves the board only when Options.Board
+// is set, and then only behind the same password (see board.go).
 //
 // Nothing is stored. Client ids, codes and tokens are HMAC-signed claims, so a
 // restart or redeploy doesn't log anyone out, and changing the password does.
@@ -47,6 +48,8 @@ type Options struct {
 	Password  string // the login page password
 	Secret    []byte // signing secret, kept across restarts
 	Token     string // optional static token, by header or in the path
+	// Board is the UI and REST API, without loopback checks. Nil keeps it off.
+	Board http.Handler
 }
 
 func (o Options) OAuth() bool { return o.PublicURL != "" && o.Password != "" }
@@ -105,6 +108,9 @@ func Handler(next http.Handler, o Options) http.Handler {
 			r.URL.Path = "/mcp"
 			next.ServeHTTP(w, r)
 		})
+	}
+	if o.Board != nil {
+		s.boardRoutes(m)
 	}
 	return cors(m)
 }
@@ -275,18 +281,20 @@ button{border:0;background:var(--accent);color:#fff;font-weight:600;cursor:point
 .err{color:var(--err)}
 </style></head><body><main>
 {{if .Fatal}}<h1>Can't sign in</h1><p class="err">{{.Fatal}}</p>{{else}}
-<h1>Connect to Job Hunt</h1>
-<p><b>{{.Client}}</b> wants to read and update your job pipeline. After you sign in, you'll go back to <b>{{.Host}}</b>.</p>
+<h1>{{.Title}}</h1>
+{{if .Client}}<p><b>{{.Client}}</b> wants to read and update your job pipeline. After you sign in, you'll go back to <b>{{.Host}}</b>.</p>
+{{else}}<p>Enter your password to open the board.</p>{{end}}
 {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
-<form method="post" action="/authorize">
+<form method="post" action="{{.Action}}">
 {{range $k, $v := .Params}}<input type="hidden" name="{{$k}}" value="{{$v}}">{{end}}
 <input type="password" name="password" placeholder="Password" autocomplete="current-password" autofocus required>
-<button type="submit">Allow access</button>
+<button type="submit">{{.Button}}</button>
 </form>{{end}}
 </main></body></html>`))
 
 type pageData struct {
 	Fatal, Error, Client, Host string
+	Title, Button, Action      string
 	Params                     map[string]string
 }
 
@@ -296,7 +304,8 @@ func renderPage(w http.ResponseWriter, status int, d pageData) {
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
-	h.Set("Referrer-Policy", "no-referrer")
+	// Not no-referrer: with that, browsers send "Origin: null" on the form post.
+	h.Set("Referrer-Policy", "same-origin")
 	w.WriteHeader(status)
 	page.Execute(w, d)
 }
@@ -356,6 +365,7 @@ func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	u, _ := url.Parse(redirect)
 	d := pageData{Client: client, Host: u.Host, Params: q}
+	d.Title, d.Button, d.Action = "Connect to Job Hunt", "Allow access", "/authorize"
 	if r.Method == http.MethodGet {
 		renderPage(w, http.StatusOK, d)
 		return
@@ -506,10 +516,12 @@ func (s *server) grant(r *http.Request) (map[string]any, error) {
 }
 
 // cors lets browser-based clients such as MCP Inspector discover and call the
-// server. Every route needs a token or a password, so no cookie is ever trusted.
+// server. It covers only the MCP and OAuth routes, which take bearer tokens or
+// client credentials, never the board's session cookie.
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/authorize" {
+		p := r.URL.Path
+		if p == "/mcp" || strings.HasPrefix(p, "/mcp/") || strings.HasPrefix(p, "/.well-known/") || p == "/register" || p == "/token" {
 			h := w.Header()
 			h.Set("Access-Control-Allow-Origin", "*")
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID")
@@ -534,6 +546,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func (o Options) Validate() error {
 	if o.Token != "" && len(o.Token) < 24 {
 		return errors.New("remoteMcp.token must be at least 24 characters")
+	}
+	if o.Board != nil && !o.OAuth() {
+		return errors.New("the board needs remoteMcp.publicUrl and password, so it can ask for a login")
 	}
 	if o.PublicURL == "" && o.Password == "" {
 		if o.Token == "" {

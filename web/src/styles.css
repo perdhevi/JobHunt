@@ -104,6 +104,7 @@ h1{font-family:var(--display);font-weight:700;font-size:clamp(26px,4vw,36px);let
 .actions .r{display:flex;gap:8px;flex-wrap:wrap}
 .confirm{background:var(--bad-soft);color:var(--bad);border-radius:8px;padding:10px 12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px}
 .hdr-actions{display:flex;gap:8px;flex-wrap:wrap}
+.hdr-actions form.inline{display:contents}
 .hint{font-size:12px;color:var(--muted)}
 .chip.lt{background:transparent;border:1px solid var(--line);color:var(--ink)}
 .lstats{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:18px}

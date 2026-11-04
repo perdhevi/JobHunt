@@ -26,8 +26,14 @@ type Server struct {
 	MCP    http.Handler
 }
 
-// Handler assembles the routes.
+// Handler assembles the routes for the loopback listener.
 func (s *Server) Handler() http.Handler {
+	return localOnly(s.Routes())
+}
+
+// Routes is Handler without the loopback checks, for a listener that puts its
+// own login in front.
+func (s *Server) Routes() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /api/applications", s.listApps)
 	m.HandleFunc("POST /api/applications", s.createApp)
@@ -43,13 +49,17 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /api/files/{id}", s.getFile)
 	m.HandleFunc("GET /api/settings", s.getSettings)
 	m.HandleFunc("PUT /api/settings", s.putSettings)
+	// The remote listener answers this itself, so the UI knows to offer sign-out.
+	m.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]bool{"remote": false})
+	})
 	if s.MCP != nil {
 		m.Handle("/mcp", s.MCP)
 	}
 	if s.UI != nil {
 		m.Handle("/", spa(s.UI))
 	}
-	return localOnly(m)
+	return m
 }
 
 // localOnly blocks DNS rebinding and cross-site requests. Without it, any web

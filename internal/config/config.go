@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -30,6 +31,7 @@ const (
 	EnvPublicURL    = "JOBHUNT_PUBLIC_URL"    // overrides remoteMcp.publicUrl
 	EnvAuthPassword = "JOBHUNT_AUTH_PASSWORD" // overrides remoteMcp.password
 	EnvAuthSecret   = "JOBHUNT_AUTH_SECRET"   // overrides the generated auth.secret file
+	EnvRemoteBoard  = "JOBHUNT_REMOTE_BOARD"  // overrides remoteMcp.board
 
 	DefaultListen = "127.0.0.1:8787"
 	DriveMount    = "/drive"
@@ -53,6 +55,8 @@ type RemoteMCP struct {
 	Password  string `json:"password,omitempty"`
 	// Token is a static bearer token for clients that can send a header.
 	Token string `json:"token,omitempty"`
+	// Board also serves the UI on this listener, behind the same password.
+	Board bool `json:"board,omitempty"`
 }
 
 // Path returns the config file location.
@@ -101,6 +105,13 @@ func Load() (Config, error) {
 	}
 	if v := os.Getenv(EnvAuthPassword); v != "" {
 		c.RemoteMCP.Password = v
+	}
+	if v := os.Getenv(EnvRemoteBoard); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return c, fmt.Errorf("%s must be true or false: %q", EnvRemoteBoard, v)
+		}
+		c.RemoteMCP.Board = b
 	}
 	if v := os.Getenv(EnvDB); v != "" {
 		c.DBPath = v

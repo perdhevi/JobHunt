@@ -101,12 +101,20 @@ export class ApiError extends Error {
   }
 }
 
+// Only the remote listener returns 401, when the sign-in has expired or the
+// password changed. Send the browser to the sign-in page and back here after.
+function signedOut(res: Response) {
+  if (res.status !== 401) return;
+  window.location.href = "/login?next=" + encodeURIComponent(window.location.pathname + window.location.search);
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  signedOut(res);
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new ApiError(data?.error || `Request failed (${res.status})`, res.status, data);
@@ -129,10 +137,12 @@ export const api = {
   deleteDoc: (id: string) => request<void>("DELETE", `/api/documents/${id}`),
   settings: () => request<Settings>("GET", "/api/settings"),
   saveSettings: (s: { email?: string; dbPath?: string }) => request<Settings>("PUT", "/api/settings", s),
+  session: () => request<{ remote: boolean }>("GET", "/api/session"),
   async upload(file: File): Promise<FileMeta> {
     const fd = new FormData();
     fd.append("file", file);
     const res = await fetch("/api/files", { method: "POST", body: fd });
+    signedOut(res);
     const data = await res.json().catch(() => null);
     if (!res.ok) throw new ApiError(data?.error || "Upload failed", res.status, data);
     return data;

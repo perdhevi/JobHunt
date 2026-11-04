@@ -25,6 +25,7 @@ export default function App() {
   const [apps, setApps] = useState<Application[]>([]);
   const [docs, setDocs] = useState<Doc[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [remote, setRemote] = useState(false);
   const [track, setTrack] = useState<Track>(loadTrack);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState({ msg: "Connecting…", err: false });
@@ -47,6 +48,7 @@ export default function App() {
   useEffect(() => {
     refresh();
     api.settings().then(setSettings).catch(() => {});
+    api.session().then((s) => setRemote(s.remote)).catch(() => {});
     const t = setInterval(refresh, POLL_MS);
     return () => clearInterval(t);
   }, [refresh]);
@@ -111,6 +113,11 @@ export default function App() {
           <button className="btn" onClick={() => setPanel("export")}>Export</button>
           <button className="btn" onClick={() => setPanel("docs")}>Documents</button>
           <button className="btn primary" onClick={() => setEditor({ id: null })}>+ Add application</button>
+          {remote && (
+            <form method="post" action="/logout" className="inline">
+              <button className="btn ghost" type="submit">Sign out</button>
+            </form>
+          )}
         </div>
       </header>
 
