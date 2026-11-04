@@ -78,6 +78,14 @@ CREATE UNIQUE INDEX applications_identity_key ON applications(identity_key) WHER
 CREATE INDEX applications_ref ON applications(ref);
 CREATE INDEX applications_stage ON applications(stage);
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+`, `
+-- Sign-in state the remote listener can't sign into a token: revoked sessions
+-- and token families, and spent codes and refresh tokens. See auth.go.
+CREATE TABLE auth_marks (
+  id      TEXT PRIMARY KEY,
+  at      INTEGER NOT NULL, -- unix ms, when first recorded
+  expires INTEGER NOT NULL  -- unix ms, after which the row means nothing
+);
 `}
 
 // Sentinel errors, mapped to HTTP statuses and MCP results by the callers.

@@ -122,15 +122,21 @@ Then add the connector with the URL `https://<your-domain>/mcp`. Each client sho
 - **ChatGPT**: Settings → Apps & Connectors → Advanced → Developer mode, then Create, with authentication set to OAuth. OpenAI limits full MCP access by plan, so check what yours allows.
 - **Claude Code**: `claude mcp add --scope user --transport http jobhunt https://<your-domain>/mcp`, then run `/mcp` to sign in.
 
-Apps stay signed in for 90 days of disuse, across restarts. Changing the password signs every app out. So does deleting `auth.secret`, which jobhunt creates beside `config.json` to sign its tokens. After five wrong passwords from one address, the sign-in page refuses that address for 15 minutes.
+Apps stay signed in for 90 days of disuse, across restarts. Each refresh hands the app a new refresh token, and if an old one comes back, someone else holds a copy, so that app is signed out. To sign out every app and browser while keeping the password, use **Settings → Sign out everywhere** on the remote board, or run `jobhunt auth signout-all` (`docker compose exec jobhunt jobhunt auth signout-all` in Docker). Changing the password does the same. So does deleting `auth.secret`, which jobhunt creates beside `config.json` to sign its tokens. Sign-in events are logged with an `auth:` prefix.
 
-To use the board through the same address, add `"board": true` to `remoteMcp` (`JOBHUNT_REMOTE_BOARD=true` in `.env`). `https://<your-domain>/` then shows a sign-in page asking for the same password, and keeps the browser signed in for 30 days. Sign out from the board's header. Changing the password signs the browser out too.
+After five wrong passwords from one address, the sign-in page refuses that address for 15 minutes. After 50 from any mix of addresses, it refuses everyone for 15 minutes, while browsers and apps already signed in keep working.
 
-For a client that can send a header but can't do OAuth, also set `"token"` (at least 24 characters) and send `Authorization: Bearer <token>`. A token on its own, without `publicUrl` and `password`, still works as before, including the `/mcp/<token>` URL form. Treat either as a password: anyone holding it can read and change your pipeline.
+Sign-in codes go only to Claude (`claude.ai`, `claude.com`), ChatGPT (`chatgpt.com`) and `localhost`, which is where Claude Code and MCP Inspector receive them. Registration is open, as these clients require, so without this list anyone could register an app named "Claude" that sends your sign-in to their own site. To allow another host, set `"redirectHosts": ["claude.ai", "app.example.com"]` in `remoteMcp` (`JOBHUNT_REDIRECT_HOSTS=claude.ai,app.example.com` in `.env`). The list replaces the default, and `localhost` is always allowed.
+
+To use the board through the same address, add `"board": true` to `remoteMcp` (`JOBHUNT_REMOTE_BOARD=true` in `.env`). `https://<your-domain>/` then shows a sign-in page asking for the same password, and keeps the browser signed in for 30 days of disuse. **Sign out** in the board's header ends that session on the server too, so a copied cookie stops working. Changing the password signs the browser out too.
+
+For a client that can send a header but can't do OAuth, also set `"token"` (at least 24 characters) and send `Authorization: Bearer <token>`. A token on its own, without `publicUrl` and `password`, still works as before, including the `/mcp/<token>` URL form. Treat either as a password: anyone holding it can read and change your pipeline. "Sign out everywhere" doesn't revoke it; removing it does.
+
+In Docker, the `JOBHUNT_*` variables in `.env` always win over `config.json`, even when empty: emptying `JOBHUNT_REMOTE_TOKEN=` turns the token off. Saving **Settings** writes only the database path to `config.json`, never the password or token.
 
 ### Deploy to a VPS
 
-[DEPLOYMENT.md](DEPLOYMENT.md) walks through running jobhunt on a VPS with HTTPS, a sign-in for the board, and room for other apps on the same server. The files it uses are in [deploy/](deploy).
+[DEPLOYMENT.md](DEPLOYMENT.md) walks through running jobhunt on a VPS with HTTPS, key-only SSH, encrypted off-server backups, the board behind an SSH tunnel or a sign-in, and room for other apps on the same server. The files it uses are in [deploy/](deploy).
 
 ### Tools
 

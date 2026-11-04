@@ -123,6 +123,15 @@ func (s *Store) DeleteDocument(ctx context.Context, id string) error {
 // FileTypeFor returns the stored media type for a filename, or "" if not allowed.
 func FileTypeFor(name string) string { return fileTypes[strings.ToLower(filepath.Ext(name))] }
 
+func allowedType(typ string) bool {
+	for _, t := range fileTypes {
+		if t == typ {
+			return true
+		}
+	}
+	return false
+}
+
 // SaveFile stores an upload. The file is on disk before its row exists, so a
 // crash leaves at worst an unreferenced file, never a dangling record.
 func (s *Store) SaveFile(ctx context.Context, name string, r io.Reader) (File, error) {
@@ -166,6 +175,9 @@ func (s *Store) blobPath(id, typ string) string {
 
 // findBlob locates a blob by id, whatever a sync client has done to its suffix.
 func (s *Store) findBlob(id string) string {
+	if !fileIDPattern.MatchString(id) { // never let an id reach outside filesDir
+		return ""
+	}
 	m, _ := filepath.Glob(filepath.Join(s.filesDir, id+"*"))
 	if len(m) == 0 {
 		return ""

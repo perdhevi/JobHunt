@@ -47,6 +47,16 @@ func (s *Store) Import(ctx context.Context, b Backup, filesDir string) (ImportRe
 		if f == nil || f.ID == "" {
 			return nil
 		}
+		// The id becomes a file name and the type picks its extension, so a
+		// crafted backup could otherwise write outside the attachments folder.
+		f.Name = filepath.Base(f.Name)
+		if f.Type == "" {
+			f.Type = FileTypeFor(f.Name)
+		}
+		if !fileIDPattern.MatchString(f.ID) || !allowedType(f.Type) {
+			rep.MissingFiles = append(rep.MissingFiles, f.Name+" (invalid id or type)")
+			return nil
+		}
 		src := ""
 		if filesDir != "" {
 			m, _ := filepath.Glob(filepath.Join(filesDir, f.ID+"*"))
@@ -64,9 +74,6 @@ func (s *Store) Import(ctx context.Context, b Backup, filesDir string) (ImportRe
 			return nil
 		}
 		defer r.Close()
-		if f.Type == "" {
-			f.Type = FileTypeFor(f.Name)
-		}
 		if _, err := s.writeBlob(f.ID, f.Type, r); err != nil {
 			rep.MissingFiles = append(rep.MissingFiles, f.Name)
 			return nil

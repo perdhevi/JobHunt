@@ -94,10 +94,22 @@ func isLoopbackHost(hostport string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// csp allows only the board's own code, plus the Google Fonts stylesheet and
+// font files that index.html loads. It's the backstop if a stored value ever
+// reaches the page as markup or a link.
+const csp = "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; " +
+	"font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; " +
+	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
 // spa serves built assets and falls back to index.html.
 func spa(ui fs.FS) http.Handler {
 	files := http.FileServerFS(ui)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", csp)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "same-origin")
 		p := strings.TrimPrefix(r.URL.Path, "/")
 		if p != "" {
 			if _, err := fs.Stat(ui, p); err != nil {
@@ -344,7 +356,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, fmt.Errorf("%w: %v", store.ErrInvalid, err))
 			return
 		}
-		cfg, err := config.Load()
+		// The file alone, so the password and token from the environment
+		// aren't written into it.
+		cfg, err := config.LoadFile()
 		if err != nil {
 			writeErr(w, err)
 			return

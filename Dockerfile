@@ -6,6 +6,8 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
+# go.mod sets the lowest Go patch release with known fixes. This image won't
+# download a newer Go itself, so build with --pull when go.mod moves ahead.
 FROM golang:1.27-alpine AS app
 WORKDIR /src
 COPY go.mod go.sum ./

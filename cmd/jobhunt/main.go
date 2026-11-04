@@ -35,7 +35,17 @@ const usage = `jobhunt %s
   jobhunt config set-db <path>  point at a database file
   jobhunt import <backup.json> [--files <dir>]
                                 load a tracker JSON backup (safe to re-run)
+  jobhunt auth signout-all      sign out every browser and connected app
+                                of the remote listener, keeping the password
 `
+
+// Timeouts for both listeners. Uploads are at most 20 MB and MCP replies are
+// JSON, not streams, so a minute or two is plenty and stalled clients let go.
+const (
+	readTimeout  = time.Minute
+	writeTimeout = 2 * time.Minute
+	idleTimeout  = 2 * time.Minute
+)
 
 func main() {
 	log.SetFlags(0)
@@ -54,6 +64,8 @@ func main() {
 		err = configCmd(args)
 	case "import":
 		err = importCmd(args)
+	case "auth":
+		err = authCmd(args)
 	default:
 		fmt.Fprintf(os.Stderr, usage, version)
 		os.Exit(2)
@@ -99,6 +111,9 @@ func serve(args []string) error {
 		Addr:              cfg.Listen,
 		Handler:           (&api.Server{Store: s, Config: cfg, UI: ui, MCP: h}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM) // docker stop sends SIGTERM
@@ -108,7 +123,8 @@ func serve(args []string) error {
 
 	var remoteSrv *http.Server
 	if rc := cfg.RemoteMCP; rc.Listen != "" {
-		opts := remote.Options{PublicURL: rc.PublicURL, Password: rc.Password, Token: rc.Token}
+		opts := remote.Options{PublicURL: rc.PublicURL, Password: rc.Password, Token: rc.Token,
+			RedirectHosts: rc.RedirectHosts, State: s}
 		if rc.Board {
 			opts.Board = (&api.Server{Store: s, Config: cfg, UI: ui}).Routes()
 		}
@@ -120,7 +136,8 @@ func serve(args []string) error {
 		if err := opts.Validate(); err != nil {
 			return err
 		}
-		remoteSrv = &http.Server{Addr: rc.Listen, Handler: remote.Handler(h, opts), ReadHeaderTimeout: 10 * time.Second}
+		remoteSrv = &http.Server{Addr: rc.Listen, Handler: remote.Handler(h, opts), ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout: readTimeout, WriteTimeout: writeTimeout, IdleTimeout: idleTimeout}
 		go func() { errs <- remoteSrv.ListenAndServe() }()
 		if opts.OAuth() {
 			log.Printf("remote MCP %s/mcp (OAuth, listening on %s)", strings.TrimSuffix(rc.PublicURL, "/"), rc.Listen)
@@ -171,27 +188,50 @@ func runMCP() error {
 }
 
 func configCmd(args []string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
 	if len(args) == 2 && args[0] == "set-db" {
 		p, err := config.ValidateDBPath(args[1])
 		if err != nil {
 			return err
 		}
-		cfg.DBPath = p
-		if err := config.Save(cfg); err != nil {
+		// The file alone, so values from the environment aren't saved into it.
+		file, err := config.LoadFile()
+		if err != nil {
+			return err
+		}
+		file.DBPath = p
+		if err := config.Save(file); err != nil {
 			return err
 		}
 	} else if len(args) != 0 {
 		return errors.New("usage: jobhunt config [set-db <path>]")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
 	}
 	p, err := config.Path()
 	if err != nil {
 		return err
 	}
 	fmt.Printf("config    %s\ndatabase  %s\nlisten    %s\n", p, cfg.DBPath, cfg.Listen)
+	return nil
+}
+
+// authCmd works while the server runs: the server reads revocations from the
+// database on every request.
+func authCmd(args []string) error {
+	if len(args) != 1 || args[0] != "signout-all" {
+		return errors.New("usage: jobhunt auth signout-all")
+	}
+	s, _, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if err := s.RevokeAll(context.Background()); err != nil {
+		return err
+	}
+	fmt.Println("Signed out every browser and connected app. Each signs in again with the same password.")
 	return nil
 }
 
