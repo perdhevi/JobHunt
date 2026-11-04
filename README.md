@@ -182,6 +182,8 @@ If an agent edits a record while you have it open, your save is refused with a m
 
 Reads the JSON backup format from the Export panel. It's safe to re-run: existing records are left alone, and entries marked as samples are skipped.
 
+For a full copy of the database and attachments while jobhunt keeps running, `jobhunt backup > jobhunt.tar` writes a consistent tar archive. On a VPS, see [Back up](DEPLOYMENT.md#back-up).
+
 ## Develop
 
 ```powershell

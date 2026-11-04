@@ -37,12 +37,16 @@ const (
 
 	DefaultListen = "127.0.0.1:8787"
 	DriveMount    = "/drive"
+
+	// UnixPrefix makes a listen address a socket path: unix:/run/jobhunt/board.sock.
+	UnixPrefix = "unix:"
 )
 
 type Config struct {
 	// DBPath is the SQLite file, typically under "G:\My Drive\...".
 	DBPath string `json:"dbPath"`
-	// Listen is the UI, REST API and local MCP address. Keep it on loopback.
+	// Listen is the UI, REST API and local MCP address. Keep it on loopback,
+	// or on a socket (UnixPrefix) where other programs share the machine.
 	Listen string `json:"listen,omitempty"`
 	// RemoteMCP optionally opens a second listener for tunnels (see README).
 	RemoteMCP RemoteMCP `json:"remoteMcp,omitempty"`

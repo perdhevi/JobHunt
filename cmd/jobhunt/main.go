@@ -37,6 +37,9 @@ const usage = `jobhunt %s
                                 load a tracker JSON backup (safe to re-run)
   jobhunt auth signout-all      sign out every browser and connected app
                                 of the remote listener, keeping the password
+  jobhunt backup [file.tar]     write the database and attachments as a tar
+                                archive, to stdout by default, while serving
+  jobhunt health                ask the running server whether it's healthy
 `
 
 // Timeouts for both listeners. Uploads are at most 20 MB and MCP replies are
@@ -66,6 +69,10 @@ func main() {
 		err = importCmd(args)
 	case "auth":
 		err = authCmd(args)
+	case "backup":
+		err = backupCmd(args)
+	case "health":
+		err = healthCmd()
 	default:
 		fmt.Fprintf(os.Stderr, usage, version)
 		os.Exit(2)
@@ -108,18 +115,21 @@ func serve(args []string) error {
 	}
 	h := mcpserver.HTTPHandler(mcpserver.New(s, version))
 	srv := &http.Server{
-		Addr:              cfg.Listen,
 		Handler:           (&api.Server{Store: s, Config: cfg, UI: ui, MCP: h}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
 	}
+	ln, err := api.Listen(cfg.Listen)
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM) // docker stop sends SIGTERM
 	defer stop()
 	errs := make(chan error, 2)
-	go func() { errs <- srv.ListenAndServe() }()
+	go func() { errs <- srv.Serve(ln) }()
 
 	var remoteSrv *http.Server
 	if rc := cfg.RemoteMCP; rc.Listen != "" {
@@ -150,10 +160,14 @@ func serve(args []string) error {
 	}
 
 	log.Printf("database  %s", s.Path())
-	log.Printf("board     http://%s", cfg.Listen)
-	log.Printf("local MCP http://%s/mcp", cfg.Listen)
-	if *open {
-		exec.Command("rundll32", "url.dll,FileProtocolHandler", "http://"+cfg.Listen).Start()
+	if sock, ok := strings.CutPrefix(cfg.Listen, config.UnixPrefix); ok {
+		log.Printf("board     socket %s, reached through an SSH tunnel (DEPLOYMENT.md)", sock)
+	} else {
+		log.Printf("board     http://%s", cfg.Listen)
+		log.Printf("local MCP http://%s/mcp", cfg.Listen)
+		if *open {
+			exec.Command("rundll32", "url.dll,FileProtocolHandler", "http://"+cfg.Listen).Start()
+		}
 	}
 
 	select {
@@ -233,6 +247,53 @@ func authCmd(args []string) error {
 	}
 	fmt.Println("Signed out every browser and connected app. Each signs in again with the same password.")
 	return nil
+}
+
+// backupCmd works while the server runs, so a backup needs no downtime:
+//
+//	docker compose exec -T jobhunt jobhunt backup > jobhunt.tar
+func backupCmd(args []string) (err error) {
+	if len(args) > 1 {
+		return errors.New("usage: jobhunt backup [file.tar]")
+	}
+	out := os.Stdout
+	if len(args) == 1 && args[0] != "-" {
+		// Never overwrite: an older backup may be the only good one.
+		f, oerr := os.OpenFile(args[0], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if oerr != nil {
+			return oerr
+		}
+		// err is the named result, so a failed backup leaves no partial file.
+		defer func() {
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+			if err != nil {
+				os.Remove(args[0])
+			}
+		}()
+		out = f
+	} else if fi, err := out.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		return errors.New("the backup is a tar archive. Send it to a file: jobhunt backup > jobhunt.tar")
+	}
+	s, _, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return s.Backup(context.Background(), out)
+}
+
+// healthCmd is the container health check. It asks the server, through its
+// board listener, whether the database answers.
+func healthCmd() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	return api.CheckHealth(ctx, cfg.Listen)
 }
 
 func importCmd(args []string) error {

@@ -87,6 +87,18 @@ docker version --format '{{.Server.Version}}'
 
 Docker writes its own firewall rules, so a port it publishes is open even where `ufw` says it's closed. That's why every port in this setup is published on `127.0.0.1` only. Keep it that way if you edit `compose.yaml`.
 
+Docker keeps every container's log forever unless told otherwise, and on a server shared by several apps one chatty app can fill the disk. jobhunt's `compose.yaml` caps its own logs; this makes the cap the default for every app, and keeps containers running while Docker itself updates **(VPS)**:
+
+```bash
+printf '{\n  "log-driver": "local",\n  "live-restore": true\n}\n' > /etc/docker/daemon.json && systemctl restart docker
+```
+
+A 2 GB server running several apps, and building images, is better off with some swap **(VPS)**:
+
+```bash
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
+
 ## 3. Clone the repository
 
 The repository is private, so give the server a read-only deploy key. Create a key **(VPS)**, pressing Enter at each prompt:
@@ -147,7 +159,7 @@ docker compose up -d --build --remove-orphans
 docker compose logs jobhunt
 ```
 
-The log should end with `remote MCP https://jobhunt.yourdomain.com/mcp (OAuth…)`, followed by `remote board https://jobhunt.yourdomain.com (password sign-in)` if you turned the board on.
+The log should end with `remote MCP https://jobhunt.yourdomain.com/mcp (OAuth…)`, followed by `remote board https://jobhunt.yourdomain.com (password sign-in)` if you turned the board on. Within a minute, `docker compose ps` should show jobhunt as `(healthy)`.
 
 ## 6. Shared proxy (only when hosting other apps)
 
@@ -159,7 +171,7 @@ Skip this if you kept `COMPOSE_PROFILES=caddy`. Only one program can serve ports
 mkdir -p ~/proxy && cd ~/proxy
 ```
 
-Create `compose.yaml` with `nano compose.yaml`. Host networking lets Caddy reach every app on `127.0.0.1`:
+Create `compose.yaml` with `nano compose.yaml`. Host networking lets Caddy reach every app on `127.0.0.1`. Caddy faces the internet, so it keeps only the right to bind ports 80 and 443:
 
 ```yaml
 services:
@@ -167,6 +179,10 @@ services:
     image: caddy:2.10-alpine
     restart: unless-stopped
     network_mode: host
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -176,18 +192,38 @@ volumes:
   caddy_config:
 ```
 
-Create `Caddyfile` with `nano Caddyfile`, one block per app:
+Create `Caddyfile` with `nano Caddyfile`, one block per app. The snippet at the top holds what every site gets:
 
 ```
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+}
+
 jobhunt.yourdomain.com {
-	header Strict-Transport-Security "max-age=31536000"
+	import common
+	request_body {
+		max_size 25MB
+	}
 	reverse_proxy 127.0.0.1:8788
 }
 
 otherapp.yourdomain.com {
+	import common
 	reverse_proxy 127.0.0.1:3000
 }
 ```
+
+Give every other app the same care jobhunt's `compose.yaml` takes:
+
+- **Publish ports on `127.0.0.1` only**, such as `"127.0.0.1:3000:3000"`. Anything else is open to the internet.
+- **Cap memory and processes**, with `mem_limit` and `pids_limit`, so one app can't starve the rest.
+- **Give each app its own compose project.** Each gets its own network, and Docker keeps containers on different networks from reaching each other. Don't attach apps to one shared network.
+- **Put nothing that lacks a sign-in on a port.** Every process on the server, and Caddy with it, can reach every port published on `127.0.0.1`. That's why jobhunt's board without a sign-in sits on a socket instead.
 
 ```bash
 docker compose up -d
@@ -279,25 +315,29 @@ cd ~/jobhunt && git pull && cd deploy && docker compose build --pull && docker c
 
 ### Back up
 
-A backup stops jobhunt for a few seconds, because copying the database while it's being written can catch it half-way. Copy the data out and restart **(VPS)**:
+`jobhunt backup` writes the database and attachments as one archive while jobhunt keeps running. It copies the database inside a single read, so the copy is consistent even if an app writes meanwhile **(VPS)**:
 
 ```bash
-cd ~/jobhunt/deploy && docker compose stop jobhunt && docker cp jobhunt-jobhunt-1:/data ~/backup-$(date +%F); docker compose start jobhunt
+cd ~/jobhunt/deploy && docker compose exec -T jobhunt jobhunt backup > ~/jobhunt-$(date +%F).tar
 ```
 
-Pack and encrypt it, and delete the plain copy **(VPS)**. `gpg` asks for a passphrase; keep it somewhere other than this server:
+Encrypt it and delete the plain copy **(VPS)**. `gpg` asks for a passphrase; keep it somewhere other than this server:
 
 ```bash
-cd ~ && tar -czf jobhunt-$(date +%F).tar.gz backup-$(date +%F) && rm -rf backup-$(date +%F) && gpg --symmetric --cipher-algo AES256 jobhunt-$(date +%F).tar.gz && rm jobhunt-$(date +%F).tar.gz
+cd ~ && gpg --symmetric --cipher-algo AES256 jobhunt-$(date +%F).tar && rm jobhunt-$(date +%F).tar
 ```
 
 A backup on the same disk dies with the server, so take a copy off it **(PC)**, for example into Google Drive:
 
 ```bash
-scp "root@<vps-ip>:~/jobhunt-*.tar.gz.gpg" "G:\My Drive\JobHunt"
+scp "root@<vps-ip>:~/jobhunt-*.tar.gpg" "G:\My Drive\JobHunt"
 ```
 
-To restore, decrypt with `gpg -d jobhunt-<date>.tar.gz.gpg | tar -xz`, then load the `backup-<date>/` folder as in [step 8](#8-move-your-data), using it in place of `~/import`.
+To restore, unpack it into a folder **(VPS)**, then load that folder as in [step 8](#8-move-your-data), in place of `~/import`:
+
+```bash
+mkdir -p ~/import && gpg -d jobhunt-<date>.tar.gpg | tar -x -C ~/import
+```
 
 ### Signing out
 
@@ -317,16 +357,10 @@ Each app asks for the password again the next time it connects. The static token
 
 ### Board through an SSH tunnel
 
-The board on port 8787 has no sign-in, so it isn't published on the server at all. Instead, tunnel straight to the container. Find its address **(VPS)**:
+The board without a sign-in has no port on the server. It listens on a socket file that only root can open, so neither other apps' containers nor other processes on the server can reach it. SSH can forward a port on your PC to that socket. Open the tunnel **(PC)**, keep the window open, then go to http://127.0.0.1:8787:
 
 ```bash
-docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' jobhunt-jobhunt-1
+ssh -N -L 8787:/var/lib/docker/volumes/jobhunt_run/_data/board.sock root@<vps-ip>
 ```
 
-Open the tunnel with that address **(PC)**, keep the window open, then go to http://127.0.0.1:8787:
-
-```bash
-ssh -N -L 8787:<container-address>:8787 root@<vps-ip>
-```
-
-The address can change when the container is recreated, after an update for example. Look it up again if the tunnel stops connecting.
+The path stays the same when the container is recreated, after an update for example. If the tunnel connects but the page doesn't load, check that jobhunt is running with `docker compose ps` **(VPS)**.

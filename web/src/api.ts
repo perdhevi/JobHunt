@@ -89,6 +89,7 @@ export interface Settings {
   activePath: string;
   configPath: string;
   docker: boolean;
+  dbPathFixed: boolean; // JOBHUNT_DB picks the database, as on a VPS
 }
 
 export class ApiError extends Error {

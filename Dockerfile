@@ -19,13 +19,16 @@ COPY --from=web /src/web/dist web/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /jobhunt ./cmd/jobhunt
 
 FROM alpine:3.22
-RUN adduser -D -u 1000 jobhunt && install -d -o jobhunt /config /data
+# /run/jobhunt holds the board's socket on a VPS (deploy/compose.yaml), and
+# only this user may enter it.
+RUN adduser -D -u 1000 jobhunt && install -d -o jobhunt /config /data && install -d -o jobhunt -m 700 /run/jobhunt
 COPY --from=app /jobhunt /usr/local/bin/jobhunt
 USER jobhunt
 ENV JOBHUNT_CONFIG=/config/config.json JOBHUNT_LISTEN=0.0.0.0:8787
 VOLUME /config
 EXPOSE 8787 8788
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-  CMD wget -q -O /dev/null http://127.0.0.1:8787/api/settings
+# Asks the server through its board listener, a port or a socket, whether the
+# database answers. Needs no wget or shell in the image.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD ["jobhunt", "health"]
 ENTRYPOINT ["jobhunt"]
 CMD ["serve"]

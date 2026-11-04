@@ -66,9 +66,14 @@ func New(s *store.Store, version string) *mcp.Server {
 // server restarts and works with clients that don't keep sessions, such as
 // ChatGPT behind a tunnel.
 func HTTPHandler(srv *mcp.Server) http.Handler {
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv },
+	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	// Tool calls are small JSON. Like the REST API's limit, this keeps one
+	// request from holding megabytes of memory.
+	return http.MaxBytesHandler(h, maxRequest)
 }
+
+const maxRequest = 4 << 20
 
 type handlers struct{ s *store.Store }
 

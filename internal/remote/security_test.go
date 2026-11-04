@@ -5,7 +5,9 @@ package remote
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -158,22 +160,63 @@ func TestLogoutRevokesCopiedCookie(t *testing.T) {
 // forged X-Forwarded-For. The global cap still stops guessing.
 func TestGlobalLockout(t *testing.T) {
 	e := newEnv(t, Options{Password: password, Board: stubBoard})
-	wrong := func(xff string) int {
-		req, _ := http.NewRequest("POST", e.srv.URL+"/login", strings.NewReader(url.Values{"password": {"nope"}}.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("Origin", e.srv.URL)
-		req.Header.Set("X-Forwarded-For", xff)
-		res, err := browser(t).Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return res.StatusCode
-	}
 	for i := range maxGlobalFailures {
-		wrong("198.51.100." + string(rune('a'+i%26)) + string(rune('a'+i/26)))
+		e.wrongLogin(fmt.Sprintf("198.51.100.%d", i+1))
 	}
-	if got := wrong("203.0.113.99"); got != http.StatusTooManyRequests {
+	if got := e.wrongLogin("203.0.113.99"); got != http.StatusTooManyRequests {
 		t.Fatalf("after %d failures from many addresses: %d", maxGlobalFailures, got)
+	}
+}
+
+// wrongLogin posts a wrong board password as if Caddy forwarded it from xff.
+func (e *env) wrongLogin(xff string) int {
+	e.t.Helper()
+	req, _ := http.NewRequest("POST", e.srv.URL+"/login", strings.NewReader(url.Values{"password": {"nope"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", e.srv.URL)
+	req.Header.Set("X-Forwarded-For", xff)
+	res, err := browser(e.t).Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	res.Body.Close()
+	return res.StatusCode
+}
+
+// One IPv6 machine owns a /64, so moving around inside it earns no more guesses.
+func TestLockoutCountsIPv6Prefix(t *testing.T) {
+	e := newEnv(t, Options{Password: password, Board: stubBoard})
+	for i := range maxFailures {
+		e.wrongLogin(fmt.Sprintf("2001:db8:1:2::%x", i+1))
+	}
+	if got := e.wrongLogin("2001:db8:1:2:ffff:ffff:ffff:1"); got != http.StatusTooManyRequests {
+		t.Fatalf("new address in the same /64: %d", got)
+	}
+	if got := e.wrongLogin("2001:db8:1:3::1"); got != http.StatusUnauthorized {
+		t.Fatalf("a different /64 is a different machine: %d", got)
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	for _, c := range []struct{ remote, xff, want string }{
+		{"10.0.0.2:5000", "203.0.113.7", "203.0.113.7"},          // Caddy on the compose network
+		{"10.0.0.2:5000", "1.1.1.1, 203.0.113.7", "203.0.113.7"}, // Caddy appends the real peer
+		{"10.0.0.2:5000", "evil\" injected", "10.0.0.2"},         // not an address
+		{"203.0.113.9:5000", "198.51.100.1", "203.0.113.9"},      // not from a proxy
+		{"127.0.0.1:5000", "2001:DB8::1", "2001:db8::1"},         // normalised for the log and the key
+	} {
+		r := httptest.NewRequest("POST", "/login", nil)
+		r.RemoteAddr = c.remote
+		r.Header.Set("X-Forwarded-For", c.xff)
+		if got := clientIP(r); got != c.want {
+			t.Errorf("remote %s xff %q: %q, want %q", c.remote, c.xff, got, c.want)
+		}
+	}
+	if got := lockKey("203.0.113.7"); got != "203.0.113.7" {
+		t.Errorf("IPv4 key %q", got)
+	}
+	if got := lockKey("2001:db8:1:2:3:4:5:6"); got != "2001:db8:1:2::/64" {
+		t.Errorf("IPv6 key %q", got)
 	}
 }
 

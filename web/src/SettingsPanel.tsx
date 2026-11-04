@@ -25,8 +25,12 @@ export function SettingsPanel({ settings, remote, onClose, onSaved }: { settings
         <div className="lhead"><h2 id="sTitle">Settings</h2><button type="button" className="btn" onClick={onClose}>Done</button></div>
         <div className="f">
           <label htmlFor="s-db">Database file</label>
-          <input id="s-db" required value={dbPath} onChange={(e) => setDbPath(e.target.value)} placeholder="G:\My Drive\JobHunt\jobhunt.db" />
-          <span className="hint">Full path to the SQLite file. A new file is created if none exists, and the attachments folder sits beside it. Existing data isn't moved. To move, stop jobhunt and copy the .db and attachments folder first.</span>
+          <input id="s-db" required readOnly={settings.dbPathFixed} value={dbPath} onChange={(e) => setDbPath(e.target.value)} placeholder="G:\My Drive\JobHunt\jobhunt.db" />
+          <span className="hint">
+            {settings.dbPathFixed
+              ? "Set by JOBHUNT_DB on this server, so it can't be changed here."
+              : "Full path to the SQLite file. A new file is created if none exists, and the attachments folder sits beside it. Existing data isn't moved. To move, stop jobhunt and copy the .db and attachments folder first."}
+          </span>
         </div>
         <div className="f">
           <label>In use now</label>

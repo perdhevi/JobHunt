@@ -143,6 +143,13 @@ func (s *Store) Close() error {
 func (s *Store) Path() string     { return s.path }
 func (s *Store) FilesDir() string { return s.filesDir }
 
+// Ping reads the schema version. That reads the database file, so it fails
+// when the disk or mount underneath has gone away.
+func (s *Store) Ping(ctx context.Context) error {
+	var v int
+	return s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&v)
+}
+
 func (s *Store) migrate(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

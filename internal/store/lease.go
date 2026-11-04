@@ -1,6 +1,8 @@
 package store
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,8 +13,13 @@ import (
 
 // SQLite's file locks don't cross between Windows and a container: each side
 // only sees its own locks, so writing from both corrupts the database. Each side
-// therefore keeps a timestamped lease file beside the .db and refuses to open
-// while the other side's lease is fresh. A crashed process's lease simply expires.
+// therefore keeps timestamped lease files beside the .db and refuses to open
+// while the other side has a fresh one. A crashed process's lease simply expires.
+//
+// Every process has its own lease file. With one file per side, a short-lived
+// process such as "jobhunt mcp" removed the lease on exit while "jobhunt serve"
+// still held the database, leaving the other side free to open it until the
+// next refresh.
 const (
 	SideWindows = "windows"
 	SideDocker  = "docker"
@@ -21,7 +28,7 @@ const (
 	leaseExpiry  = 30 * time.Second
 )
 
-// OpenAs is Open for a real process, taking this side's lease first.
+// OpenAs is Open for a real process, taking a lease on this side first.
 func OpenAs(path, side string) (*Store, error) {
 	release, err := claim(path, side)
 	if err != nil {
@@ -36,7 +43,39 @@ func OpenAs(path, side string) (*Store, error) {
 	return s, nil
 }
 
-func leasePath(path, side string) string { return path + "." + side + ".lease" }
+// newLeasePath names this process's lease: <db>.<side>.<random>.lease.
+func newLeasePath(path, side string) string {
+	b := make([]byte, 6)
+	rand.Read(b)
+	return fmt.Sprintf("%s.%s.%s.lease", path, side, hex.EncodeToString(b))
+}
+
+// leases lists one side's lease files, fresh or not. The prefix also matches
+// <db>.<side>.lease, the one shared file of older builds, so a side still
+// running one of those is seen too.
+func leases(path, side string) []string {
+	dir, prefix := filepath.Dir(path), filepath.Base(path)+"."+side+"."
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if n := e.Name(); strings.HasPrefix(n, prefix) && strings.HasSuffix(n, ".lease") {
+			out = append(out, filepath.Join(dir, n))
+		}
+	}
+	return out
+}
+
+func sideActive(path, side string) bool {
+	for _, f := range leases(path, side) {
+		if leaseFresh(f) {
+			return true
+		}
+	}
+	return false
+}
 
 func writeLease(file string) error {
 	return os.WriteFile(file, []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)), 0o644)
@@ -56,22 +95,29 @@ func claim(path, side string) (release func(), err error) {
 	if side == SideDocker {
 		other = SideWindows
 	}
-	otherFile, ownFile := leasePath(path, other), leasePath(path, side)
 	held := fmt.Errorf("database is in use from %s, and using it from both at once corrupts it. Stop that side or connect through http://127.0.0.1:8787/mcp. A crashed process clears after %s", other, leaseExpiry)
 
-	if leaseFresh(otherFile) {
+	if sideActive(path, other) {
 		return nil, held
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create database folder: %w", err)
 	}
-	if err := writeLease(ownFile); err != nil {
+	// Crashed processes on this side leave expired files behind. A live one
+	// that was merely asleep rewrites its file on its next refresh.
+	for _, f := range leases(path, side) {
+		if !leaseFresh(f) {
+			os.Remove(f)
+		}
+	}
+	own := newLeasePath(path, side)
+	if err := writeLease(own); err != nil {
 		return nil, fmt.Errorf("write lease: %w", err)
 	}
 	// Both sides may have passed the check together. Looking again after writing
 	// means at least one of them sees the other, and refusing both is safe.
-	if leaseFresh(otherFile) {
-		os.Remove(ownFile)
+	if sideActive(path, other) {
+		os.Remove(own)
 		return nil, held
 	}
 
@@ -85,13 +131,13 @@ func claim(path, side string) (release func(), err error) {
 			case <-stop:
 				return
 			case <-t.C:
-				writeLease(ownFile)
+				writeLease(own)
 			}
 		}
 	}()
 	return func() {
 		close(stop)
 		<-done
-		os.Remove(ownFile)
+		os.Remove(own)
 	}, nil
 }

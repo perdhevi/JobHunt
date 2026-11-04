@@ -390,6 +390,7 @@ func renderPage(w http.ResponseWriter, status int, d pageData) {
 // the client and redirect are known to be good, errors are shown, not redirected,
 // so the endpoint can't be used to bounce someone to an arbitrary site.
 func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	r.ParseForm()
 	q := map[string]string{}
 	for _, k := range []string{"response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource"} {
@@ -471,13 +472,14 @@ func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
 // the outcome. It returns 0 for the right password, otherwise the status and
 // message for the sign-in page.
 func (s *server) checkPassword(r *http.Request, ip, where string) (int, string) {
-	if s.lockedOut(ip) {
+	key := lockKey(ip)
+	if s.lockedOut(key) {
 		log.Printf("auth: %s from %s refused, too many wrong passwords", where, ip)
 		return http.StatusTooManyRequests, "Too many wrong passwords. Try again in 15 minutes."
 	}
 	// Comparing MACs keeps the time taken independent of the password's length.
 	if !hmac.Equal(mac(s.clientKey, "pw\x00"+r.PostForm.Get("password")), mac(s.clientKey, "pw\x00"+s.o.Password)) {
-		s.recordFailure(ip)
+		s.recordFailure(key)
 		log.Printf("auth: wrong password on %s from %s", where, ip)
 		return http.StatusUnauthorized, "Wrong password."
 	}
@@ -516,8 +518,21 @@ func (s *server) recordFailure(ip string) {
 	}
 }
 
+// lockKey is what lockouts count against. An IPv6 machine usually owns a whole
+// /64, so counting single addresses there would give one machine unlimited
+// guesses until the global cap shut everyone out.
+func lockKey(ip string) string {
+	a := net.ParseIP(ip)
+	if a == nil || a.To4() != nil {
+		return ip
+	}
+	return a.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
 // clientIP trusts X-Forwarded-For only from a proxy on a private network, which
 // is how Caddy reaches this listener. Caddy overwrites the header it receives.
+// A value that isn't an address is ignored, so it can't reach the log or
+// stand in for a fresh lockout key.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -526,7 +541,9 @@ func clientIP(r *http.Request) string {
 	ip := net.ParseIP(host)
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" && ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
 		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[len(parts)-1])
+		if fwd := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); fwd != nil {
+			return fwd.String()
+		}
 	}
 	return host
 }
