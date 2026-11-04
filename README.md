@@ -136,7 +136,7 @@ In Docker, the `JOBHUNT_*` variables in `.env` always win over `config.json`, ev
 
 ### Deploy to a VPS
 
-[DEPLOYMENT.md](DEPLOYMENT.md) walks through running jobhunt on a VPS with HTTPS, key-only SSH, encrypted off-server backups, the board behind an SSH tunnel or a sign-in, and room for other apps on the same server. The files it uses are in [deploy/](deploy).
+[DEPLOYMENT.md](DEPLOYMENT.md) walks through running jobhunt on a VPS with HTTPS, key-only SSH, encrypted off-server backups, the board behind an SSH tunnel or a sign-in, and room for other apps on the same server. It ends by retiring the local copy, so the server stays the only source of truth. The files it uses are in [deploy/](deploy).
 
 ### Tools
 

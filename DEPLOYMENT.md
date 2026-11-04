@@ -247,7 +247,13 @@ JSON back means Caddy has a certificate. If it fails, read Caddy's log on the se
 
 ## 8. Move your data
 
-Do this once. Stop the local copy **(PC, in the project folder)**, then wait until Google Drive shows it has finished syncing:
+Do this once. First note two numbers, so you can check the move in [step 11](#11-retire-the-local-copy): how many applications the board lists, shown at the foot of the board, and how many attachment files there are **(PC)**:
+
+```bash
+(Get-ChildItem "G:\My Drive\JobHunt\attachments").Count
+```
+
+Stop the local copy **(PC, in the project folder)**, then wait until Google Drive shows it has finished syncing:
 
 ```bash
 docker compose down
@@ -283,7 +289,7 @@ docker run --rm --user root -v jobhunt_data:/data -v ~/import:/in:ro --entrypoin
 docker compose start jobhunt && rm -rf ~/import
 ```
 
-From now on the server holds the live data. Don't start jobhunt locally again, or the two copies drift apart. The Google Drive copy stops changing, so take [backups](#back-up) from the server instead.
+From now on the server holds the live data, and the Google Drive copy stops changing. Don't start jobhunt locally again, or the two copies drift apart. [Step 11](#11-retire-the-local-copy) makes sure nothing on your PC opens the old copy by accident.
 
 ## 9. Open the board
 
@@ -304,6 +310,48 @@ claude mcp add --scope user --transport http jobhunt https://jobhunt.yourdomain.
 ```
 
 The repository's [.mcp.json](.mcp.json) points at the local `127.0.0.1:8787`. Change it to the server's URL or delete it, so Claude Code doesn't try the stopped local copy.
+
+## 11. Retire the local copy
+
+The server now holds the only live copy of your data. Anything on your PC that still opens the Google Drive database would start a second copy that drifts apart from it. The leases that stop Windows and Docker from writing at once can't see the server, so they won't catch this. Google Drive was also your copy off the server, so from now on the server's backups are the only other copy.
+
+Work through these in order, and delete nothing until the first two checks pass.
+
+**Check the move.** The board on the server should list as many applications as you noted in step 8; ask a connected app for its pipeline summary if the board is off. Then count the attachments, which should match too **(VPS)**:
+
+```bash
+cd ~/jobhunt/deploy && docker compose exec jobhunt ls /data/attachments | wc -l
+```
+
+**Back up, and check that the backup opens.** Take a backup and copy it off the server as in [Back up](#back-up). Then decrypt and unpack it into a scratch folder **(VPS)**. The list should show `jobhunt.db` and the `attachments` folder:
+
+```bash
+cd ~ && mkdir -p restore-test && gpg -d jobhunt-$(date +%F).tar.gpg | tar -x -C restore-test && ls -lR restore-test && rm -rf restore-test
+```
+
+**Point jobhunt on your PC at a practice database.** `bin\jobhunt.exe`, any app that starts `jobhunt.exe mcp` itself, and this repository's `.claude/launch.json` all read the database path from `%AppData%\JobHunt\config.json`, which still names the Google Drive file. Point it at a database for development only **(PC, in the project folder)**:
+
+```bash
+.\bin\jobhunt.exe config set-db "$env:LOCALAPPDATA\JobHunt-dev\jobhunt.db"
+```
+
+Also remove any `jobhunt.exe mcp` or `docker exec … jobhunt mcp` entry from apps such as Claude Desktop or Cursor, and connect them to the server as in step 10.
+
+**Remove the local Docker setup.** The container stopped in step 8. Remove what it left behind **(PC, in the project folder)**. The `jobhunt_config` volume holds only local settings and the local sign-in secret, none of your data:
+
+```bash
+docker volume rm jobhunt_config
+```
+
+```bash
+docker image rm jobhunt:local
+```
+
+Then delete the `.env` file in the project folder, which only records the drive letter.
+
+**Archive the Google Drive copy.** In Explorer, rename `G:\My Drive\JobHunt` to something like `JobHunt archive 2026-11`. Keep it until a few server backups have restored, then delete it. Server backups go into a folder of their own, as [Back up](#back-up) shows.
+
+**Repeat on any other computer** that ever ran jobhunt against the Google Drive folder: point its config at a practice database and remove its local Docker setup.
 
 ## Day to day
 
@@ -327,10 +375,14 @@ Encrypt it and delete the plain copy **(VPS)**. `gpg` asks for a passphrase; kee
 cd ~ && gpg --symmetric --cipher-algo AES256 jobhunt-$(date +%F).tar && rm jobhunt-$(date +%F).tar
 ```
 
-A backup on the same disk dies with the server, so take a copy off it **(PC)**, for example into Google Drive:
+A backup on the same disk dies with the server, so take a copy off it **(PC)**, for example into a folder of its own in Google Drive. Create the folder once:
 
 ```bash
-scp "root@<vps-ip>:~/jobhunt-*.tar.gpg" "G:\My Drive\JobHunt"
+New-Item -ItemType Directory -Force "G:\My Drive\JobHunt backups"
+```
+
+```bash
+scp "root@<vps-ip>:~/jobhunt-*.tar.gpg" "G:\My Drive\JobHunt backups"
 ```
 
 To restore, unpack it into a folder **(VPS)**, then load that folder as in [step 8](#8-move-your-data), in place of `~/import`:
