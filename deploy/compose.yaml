@@ -2,6 +2,8 @@
 # listener, which requires an OAuth login. The board stays on loopback.
 #   cp .env.example .env && nano .env
 #   docker compose up -d --build
+# The bundled Caddy runs only with COMPOSE_PROFILES=caddy in .env. Drop that
+# line when a shared proxy on the VPS forwards to 127.0.0.1:8788 instead.
 name: jobhunt
 services:
   jobhunt:
@@ -18,12 +20,15 @@ services:
     ports:
       # The board has no login. Reach it through an SSH tunnel, never publicly.
       - "127.0.0.1:8787:8787"
+      # MCP with OAuth, for a proxy running outside this stack.
+      - "127.0.0.1:8788:8788"
     volumes:
       - data:/data
       - config:/config
 
   caddy:
     image: caddy:2.10-alpine
+    profiles: [caddy]
     restart: unless-stopped
     depends_on: [jobhunt]
     ports:

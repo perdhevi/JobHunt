@@ -150,6 +150,41 @@ docker compose -f ~/jobhunt/deploy/compose.yaml run --rm --no-deps --user root -
 docker compose -f ~/jobhunt/deploy/compose.yaml start jobhunt
 ```
 
+#### Sharing the VPS with other apps
+
+Only one program can serve ports 80 and 443, so with several apps, run one Caddy for all of them, outside this repo, and give each app its own subdomain. Point each subdomain's DNS at the VPS. In `deploy/.env`, remove the `COMPOSE_PROFILES=caddy` line, then run `docker compose up -d --remove-orphans` to stop the bundled Caddy. jobhunt stays reachable from the VPS itself at `127.0.0.1:8788`.
+
+Put the shared Caddy in its own folder, such as `~/proxy`, with this `compose.yaml`. Host networking lets it reach every app on `127.0.0.1`:
+
+```yaml
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+volumes:
+  caddy_data:
+  caddy_config:
+```
+
+And a `Caddyfile` with one block per app. Publish each app's port on `127.0.0.1` only, as jobhunt does, so the proxy is the only way in:
+
+```
+jobhunt.example.com {
+	reverse_proxy 127.0.0.1:8788
+}
+
+otherapp.example.com {
+	reverse_proxy 127.0.0.1:3000
+}
+```
+
+Start it with `docker compose up -d` in that folder. After editing the `Caddyfile`, apply it with `docker compose exec -w /etc/caddy caddy caddy reload`.
+
 To update, `git pull` and run `docker compose up -d --build` again. Back up by copying the `data` volume, for example with `docker compose cp jobhunt:/data ./backup`.
 
 ### Tools
