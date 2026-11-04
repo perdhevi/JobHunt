@@ -17,7 +17,7 @@ COPY --from=web /src/web/dist web/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /jobhunt ./cmd/jobhunt
 
 FROM alpine:3.22
-RUN adduser -D -u 1000 jobhunt && install -d -o jobhunt /config
+RUN adduser -D -u 1000 jobhunt && install -d -o jobhunt /config /data
 COPY --from=app /jobhunt /usr/local/bin/jobhunt
 USER jobhunt
 ENV JOBHUNT_CONFIG=/config/config.json JOBHUNT_LISTEN=0.0.0.0:8787

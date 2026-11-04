@@ -11,7 +11,7 @@ A local kanban board for job applications, with an MCP server so any AI harness 
 In Docker, which needs only Docker Desktop:
 
 ```powershell
-.\scripts\docker-up.ps1 -Build      # http://127.0.0.1:8787
+.\scripts\docker-up.cmd -Build      # http://127.0.0.1:8787
 ```
 
 Or directly on Windows, which needs Go and Node:
@@ -25,7 +25,7 @@ Pick one. See [Running in Docker](#running-in-docker) for why they can't run tog
 
 ## Running in Docker
 
-Run `.\scripts\docker-up.ps1` to start jobhunt, adding `-Build` after changing the code. Stop it with `docker compose down`. The board and MCP are published on loopback only.
+Run `.\scripts\docker-up.cmd` to start jobhunt, adding `-Build` after changing the code. Stop it with `docker compose down`. The board and MCP are published on loopback only.
 
 **Run the script again after Docker Desktop or Google Drive restarts.** Docker Desktop doesn't share Google Drive's virtual drive with containers, so the script mounts it inside Docker's VM, and that mount doesn't survive a restart. A plain `docker compose up` skips this step. jobhunt then refuses to start, because Docker would otherwise give it an empty disk and a database there would never reach Drive.
 
@@ -43,7 +43,7 @@ The default is `<drive>:\My Drive\JobHunt\jobhunt.db`. The saved path lives in t
 If Drive is on a different letter, pass it once and it's remembered in `.env`, then update the path as above:
 
 ```powershell
-.\scripts\docker-up.ps1 -Drive H
+.\scripts\docker-up.cmd -Drive H
 ```
 
 ### Never run Docker and Windows at once
@@ -58,11 +58,12 @@ While Docker is running, MCP clients must connect over HTTP, not by starting `jo
 
 To import a backup, copy it to the drive and run `docker compose exec jobhunt jobhunt import "/drive/My Drive/backup.json"`.
 
-For a remote MCP listener, add these to `.env` instead of `config.json`, then run the script again. See [Connect an AI harness](#connect-an-ai-harness) for tunnel rules.
+For a remote MCP listener behind a tunnel, add these to `.env` instead of `config.json`, then run the script again. See [Connect an AI harness](#connect-an-ai-harness) for what each setting does.
 
 ```
 JOBHUNT_REMOTE_LISTEN=0.0.0.0:8788
-JOBHUNT_REMOTE_TOKEN=<at least 24 random characters>
+JOBHUNT_PUBLIC_URL=https://<your-tunnel>
+JOBHUNT_AUTH_PASSWORD=<at least 12 characters>
 ```
 
 ## Choose the database location
@@ -109,13 +110,47 @@ Claude Desktop, in `claude_desktop_config.json`:
 { "mcpServers": { "jobhunt": { "command": "C:\\temp\\JobHunt\\bin\\jobhunt.exe", "args": ["mcp"] } } }
 ```
 
-**ChatGPT and other cloud clients.** These connect from the vendor's servers, so they can't reach `127.0.0.1`. Add a dedicated listener to `config.json`, then point an HTTPS tunnel at that port only:
+**Remote, with a login.** Claude (web, Desktop and mobile), ChatGPT and other cloud clients connect from the vendor's servers, so they need a public HTTPS address. jobhunt opens a second listener for them that serves only MCP and asks for a password through OAuth, which is how those clients sign in. A proxy or tunnel pointed at it can't reach the UI or REST API. The simplest setup is [a VPS](#deploy-to-a-vps). To run it yourself, add this to `config.json` and point an HTTPS tunnel at port 8788 only, never at 8787:
 
 ```json
-"remoteMcp": { "listen": "127.0.0.1:8788", "token": "<at least 24 random characters>" }
+"remoteMcp": { "listen": "127.0.0.1:8788", "publicUrl": "https://<your-domain>", "password": "<at least 12 characters>" }
 ```
 
-The connector URL is `https://<your-tunnel>/mcp/<token>`, or `/mcp` with `Authorization: Bearer <token>` where the client supports headers. This listener serves only MCP and refuses anything without the token, so a tunnel can't reach the UI or REST API. Treat the URL as a password: anyone holding it can read and change your pipeline. OpenAI limits full MCP access by plan, so check what yours allows. Don't point a tunnel at port 8787.
+Then add the connector with the URL `https://<your-domain>/mcp`. Each client shows a sign-in page the first time, asking for that password:
+
+- **Claude** (claude.ai, Desktop, mobile): Settings → Connectors → Add custom connector. Leave the OAuth client fields empty.
+- **ChatGPT**: Settings → Apps & Connectors → Advanced → Developer mode, then Create, with authentication set to OAuth. OpenAI limits full MCP access by plan, so check what yours allows.
+- **Claude Code**: `claude mcp add --scope user --transport http jobhunt https://<your-domain>/mcp`, then run `/mcp` to sign in.
+
+Apps stay signed in for 90 days of disuse, across restarts. Changing the password signs every app out. So does deleting `auth.secret`, which jobhunt creates beside `config.json` to sign its tokens. After five wrong passwords from one address, the sign-in page refuses that address for 15 minutes.
+
+For a client that can send a header but can't do OAuth, also set `"token"` (at least 24 characters) and send `Authorization: Bearer <token>`. A token on its own, without `publicUrl` and `password`, still works as before, including the `/mcp/<token>` URL form. Treat either as a password: anyone holding it can read and change your pipeline.
+
+### Deploy to a VPS
+
+[deploy/](deploy) runs jobhunt with Caddy, which gets an HTTPS certificate automatically. You need a Linux VPS with Docker and a domain whose DNS points at it, with ports 80 and 443 open.
+
+```bash
+git clone <this repo> jobhunt && cd jobhunt/deploy
+cp .env.example .env    # set JOBHUNT_DOMAIN and JOBHUNT_AUTH_PASSWORD
+docker compose up -d --build
+```
+
+Check `https://<domain>/.well-known/oauth-authorization-server` loads, then connect your apps as above. Only the MCP listener is public. The board has no login, so it's published on the VPS's loopback only. Open it through an SSH tunnel at http://127.0.0.1:8787:
+
+```bash
+ssh -N -L 8787:127.0.0.1:8787 <user>@<vps>
+```
+
+The database lives in the `data` volume on the VPS, not on Google Drive. Once it's running, use the VPS from every machine, including Claude Code, and stop the local copy, or the two will drift apart. To move your existing data, stop jobhunt locally, copy `jobhunt.db` and the `attachments` folder into an empty folder on the VPS, and from that folder run:
+
+```bash
+docker compose -f ~/jobhunt/deploy/compose.yaml stop jobhunt
+docker compose -f ~/jobhunt/deploy/compose.yaml run --rm --no-deps --user root -v "$PWD:/in:ro" --entrypoint sh jobhunt -c 'cp -r /in/. /data/ && chown -R 1000:1000 /data'
+docker compose -f ~/jobhunt/deploy/compose.yaml start jobhunt
+```
+
+To update, `git pull` and run `docker compose up -d --build` again. Back up by copying the `data` volume, for example with `docker compose cp jobhunt:/data ./backup`.
 
 ### Tools
 
@@ -173,8 +208,10 @@ cd web; npm run dev         # UI with hot reload, proxied to the API
 
 | Path | Holds |
 |---|---|
-| `cmd/jobhunt` | CLI, server startup, remote MCP listener |
+| `cmd/jobhunt` | CLI and server startup |
+| `internal/remote` | Remote MCP listener and its OAuth sign-in |
 | `internal/store` | Schema, rules, duplicate detection. Every writer goes through here. |
 | `internal/api` | REST API and loopback protection |
 | `internal/mcpserver` | MCP tools |
+| `deploy` | VPS setup with Caddy |
 | `web/src` | React board |

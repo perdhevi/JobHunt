@@ -1,0 +1,5 @@
+# Caddy gets and renews the certificate for this name automatically. Point the
+# domain's DNS at the VPS and open ports 80 and 443 first.
+{$JOBHUNT_DOMAIN} {
+	reverse_proxy jobhunt:8788
+}

@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +20,7 @@ import (
 	"jobhunt/internal/api"
 	"jobhunt/internal/config"
 	"jobhunt/internal/mcpserver"
+	"jobhunt/internal/remote"
 	"jobhunt/internal/store"
 	"jobhunt/web"
 )
@@ -106,14 +106,24 @@ func serve(args []string) error {
 	errs := make(chan error, 2)
 	go func() { errs <- srv.ListenAndServe() }()
 
-	var remote *http.Server
-	if cfg.RemoteMCP.Listen != "" {
-		if len(cfg.RemoteMCP.Token) < 24 {
-			return errors.New("remoteMcp.token must be at least 24 characters")
+	var remoteSrv *http.Server
+	if rc := cfg.RemoteMCP; rc.Listen != "" {
+		opts := remote.Options{PublicURL: rc.PublicURL, Password: rc.Password, Token: rc.Token}
+		if opts.OAuth() {
+			if opts.Secret, err = config.AuthSecret(); err != nil {
+				return err
+			}
 		}
-		remote = &http.Server{Addr: cfg.RemoteMCP.Listen, Handler: remoteHandler(h, cfg.RemoteMCP.Token), ReadHeaderTimeout: 10 * time.Second}
-		go func() { errs <- remote.ListenAndServe() }()
-		log.Printf("remote MCP on http://%s/mcp/<token>", cfg.RemoteMCP.Listen)
+		if err := opts.Validate(); err != nil {
+			return err
+		}
+		remoteSrv = &http.Server{Addr: rc.Listen, Handler: remote.Handler(h, opts), ReadHeaderTimeout: 10 * time.Second}
+		go func() { errs <- remoteSrv.ListenAndServe() }()
+		if opts.OAuth() {
+			log.Printf("remote MCP %s/mcp (OAuth, listening on %s)", strings.TrimSuffix(rc.PublicURL, "/"), rc.Listen)
+		} else {
+			log.Printf("remote MCP on http://%s/mcp/<token>", rc.Listen)
+		}
 	}
 
 	log.Printf("database  %s", s.Path())
@@ -130,29 +140,10 @@ func serve(args []string) error {
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if remote != nil {
-		remote.Shutdown(shutdown)
+	if remoteSrv != nil {
+		remoteSrv.Shutdown(shutdown)
 	}
 	return srv.Shutdown(shutdown)
-}
-
-// remoteHandler serves only MCP, and only with the token. The token may be in
-// the path because ChatGPT's connector has no static-header option; a bearer
-// header works for clients that support one.
-func remoteHandler(next http.Handler, token string) http.Handler {
-	ok := func(got string) bool { return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 }
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/mcp" && ok(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")):
-		case strings.HasPrefix(r.URL.Path, "/mcp/") && ok(strings.TrimPrefix(r.URL.Path, "/mcp/")):
-			r = r.Clone(r.Context())
-			r.URL.Path = "/mcp"
-		default:
-			http.NotFound(w, r)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // runMCP talks to the database directly, so MCP clients work whether or not the

@@ -5,6 +5,8 @@
 package config
 
 import (
+	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,9 @@ const (
 	EnvListen       = "JOBHUNT_LISTEN"        // overrides listen
 	EnvRemoteListen = "JOBHUNT_REMOTE_LISTEN" // overrides remoteMcp.listen
 	EnvRemoteToken  = "JOBHUNT_REMOTE_TOKEN"  // overrides remoteMcp.token
+	EnvPublicURL    = "JOBHUNT_PUBLIC_URL"    // overrides remoteMcp.publicUrl
+	EnvAuthPassword = "JOBHUNT_AUTH_PASSWORD" // overrides remoteMcp.password
+	EnvAuthSecret   = "JOBHUNT_AUTH_SECRET"   // overrides the generated auth.secret file
 
 	DefaultListen = "127.0.0.1:8787"
 	DriveMount    = "/drive"
@@ -39,11 +44,15 @@ type Config struct {
 	RemoteMCP RemoteMCP `json:"remoteMcp,omitempty"`
 }
 
-// RemoteMCP is a listener that serves only MCP and always requires the token,
-// so a tunnel pointed at it can never reach the UI or REST API.
+// RemoteMCP is a listener that serves only MCP and always requires a login or
+// the token, so a tunnel or proxy pointed at it can never reach the UI or REST API.
 type RemoteMCP struct {
 	Listen string `json:"listen,omitempty"`
-	Token  string `json:"token,omitempty"`
+	// PublicURL and Password turn on OAuth, which Claude and ChatGPT connectors use.
+	PublicURL string `json:"publicUrl,omitempty"`
+	Password  string `json:"password,omitempty"`
+	// Token is a static bearer token for clients that can send a header.
+	Token string `json:"token,omitempty"`
 }
 
 // Path returns the config file location.
@@ -87,6 +96,12 @@ func Load() (Config, error) {
 	if v := os.Getenv(EnvRemoteToken); v != "" {
 		c.RemoteMCP.Token = v
 	}
+	if v := os.Getenv(EnvPublicURL); v != "" {
+		c.RemoteMCP.PublicURL = v
+	}
+	if v := os.Getenv(EnvAuthPassword); v != "" {
+		c.RemoteMCP.Password = v
+	}
 	if v := os.Getenv(EnvDB); v != "" {
 		c.DBPath = v
 	}
@@ -121,6 +136,31 @@ func Save(c Config) error {
 		return err
 	}
 	return os.Rename(tmp, p)
+}
+
+// AuthSecret returns the key that signs OAuth clients and tokens. It's generated
+// once and kept beside the config file, so restarts don't log clients out.
+// Deleting the file, or changing the password, does.
+func AuthSecret() ([]byte, error) {
+	if v := os.Getenv(EnvAuthSecret); v != "" {
+		return []byte(v), nil
+	}
+	p, err := Path()
+	if err != nil {
+		return nil, err
+	}
+	p = filepath.Join(filepath.Dir(p), "auth.secret")
+	if b, err := os.ReadFile(p); err == nil && len(bytes.TrimSpace(b)) >= 32 {
+		return bytes.TrimSpace(b), nil
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return nil, err
+	}
+	key := []byte(rand.Text() + rand.Text())
+	if err := os.WriteFile(p, append(key, '\n'), 0o600); err != nil {
+		return nil, fmt.Errorf("save auth secret: %w", err)
+	}
+	return key, nil
 }
 
 // ValidateDBPath normalises a user-supplied path and checks it can be used.

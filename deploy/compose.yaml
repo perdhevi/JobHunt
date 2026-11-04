@@ -1,0 +1,44 @@
+# jobhunt on a VPS: Caddy terminates HTTPS and forwards only the remote MCP
+# listener, which requires an OAuth login. The board stays on loopback.
+#   cp .env.example .env && nano .env
+#   docker compose up -d --build
+name: jobhunt
+services:
+  jobhunt:
+    build: ..
+    image: jobhunt:local
+    restart: unless-stopped
+    init: true
+    environment:
+      JOBHUNT_DB: /data/jobhunt.db
+      JOBHUNT_REMOTE_LISTEN: 0.0.0.0:8788
+      JOBHUNT_PUBLIC_URL: https://${JOBHUNT_DOMAIN:?set JOBHUNT_DOMAIN in .env}
+      JOBHUNT_AUTH_PASSWORD: ${JOBHUNT_AUTH_PASSWORD:?set JOBHUNT_AUTH_PASSWORD in .env}
+      JOBHUNT_REMOTE_TOKEN: ${JOBHUNT_REMOTE_TOKEN:-}
+    ports:
+      # The board has no login. Reach it through an SSH tunnel, never publicly.
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - data:/data
+      - config:/config
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on: [jobhunt]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      JOBHUNT_DOMAIN: ${JOBHUNT_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  data:
+  config:
+  caddy_data:
+  caddy_config:
