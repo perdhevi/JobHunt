@@ -71,6 +71,14 @@ Install Docker from Docker's own package repository **(VPS)**, so `apt` verifies
 install -m 0755 -d /etc/apt/keyrings && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc && chmod a+r /etc/apt/keyrings/docker.asc
 ```
 
+Check that the key really is Docker's before apt trusts it. Docker's install documentation gives its fingerprint as `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`. This prints `Key OK`, or deletes the key if it's a different one **(VPS)**:
+
+```bash
+gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc | grep -q '^fpr:*9DC858229FC7DD38854AE2D88D81803C0EBFCD88:' && echo "Key OK" || { rm -f /etc/apt/keyrings/docker.asc; echo "Wrong key, deleted. Stop here."; }
+```
+
+Go on only after `Key OK`. If the key was deleted, the install below fails rather than trusting it.
+
 ```bash
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
 ```
