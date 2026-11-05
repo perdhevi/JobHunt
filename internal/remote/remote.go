@@ -372,6 +372,10 @@ type pageData struct {
 	Fatal, Error, Client, Host string
 	Title, Button, Action      string
 	Params                     map[string]string
+	// ReturnTo is the origin the form may lead to besides this server: the
+	// app's checked redirect. Browsers apply form-action to the redirect that
+	// follows a post too, so without it the sign-in never gets back to the app.
+	ReturnTo string
 }
 
 func renderPage(w http.ResponseWriter, status int, d pageData) {
@@ -379,7 +383,11 @@ func renderPage(w http.ResponseWriter, status int, d pageData) {
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Frame-Options", "DENY")
-	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
+	formAction := "'self'"
+	if d.ReturnTo != "" {
+		formAction += " " + d.ReturnTo
+	}
+	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action "+formAction+"; frame-ancestors 'none'")
 	// Not no-referrer: with that, browsers send "Origin: null" on the form post.
 	h.Set("Referrer-Policy", "same-origin")
 	w.WriteHeader(status)
@@ -447,7 +455,7 @@ func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
 		client = "An app"
 	}
 	u, _ := url.Parse(redirect)
-	d := pageData{Client: client, Host: u.Host, Params: q}
+	d := pageData{Client: client, Host: u.Host, Params: q, ReturnTo: u.Scheme + "://" + u.Host}
 	d.Title, d.Button, d.Action = "Connect to Job Hunt", "Allow access", "/authorize"
 	if r.Method == http.MethodGet {
 		renderPage(w, http.StatusOK, d)
