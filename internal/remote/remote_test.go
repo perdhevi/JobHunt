@@ -163,9 +163,15 @@ func TestOAuthFlow(t *testing.T) {
 	if res.StatusCode != http.StatusOK || res.Header.Get("X-Frame-Options") != "DENY" {
 		t.Fatalf("login page: %d", res.StatusCode)
 	}
+	// Browsers apply form-action to the redirect after the post, so the page
+	// must allow the app's origin or the sign-in never gets back to it.
+	const formAction = "form-action 'self' https://claude.ai;"
+	if csp := res.Header.Get("Content-Security-Policy"); !strings.Contains(csp, formAction) {
+		t.Fatalf("login page CSP %q lacks %q", csp, formAction)
+	}
 
-	if res := e.login(id, "wrong"); res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("wrong password: %d", res.StatusCode)
+	if res := e.login(id, "wrong"); res.StatusCode != http.StatusUnauthorized || !strings.Contains(res.Header.Get("Content-Security-Policy"), formAction) {
+		t.Fatalf("wrong password: %d %q", res.StatusCode, res.Header.Get("Content-Security-Policy"))
 	}
 	code := codeFrom(t, e.login(id, password))
 
