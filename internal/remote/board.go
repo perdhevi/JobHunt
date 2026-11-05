@@ -1,7 +1,8 @@
 package remote
 
 import (
-	"crypto/subtle"
+	"crypto/rand"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -10,7 +11,8 @@ import (
 
 // The board signs in with the same password as the OAuth page and keeps a
 // signed session cookie. Like tokens, it's signed with the password-derived key,
-// so changing the password signs the browser out too.
+// so changing the password signs the browser out too. Signing out revokes the
+// session on the server, so a copied cookie stops working as well.
 const sessionTTL = 30 * 24 * time.Hour
 
 func (s *server) boardRoutes(m *http.ServeMux) {
@@ -34,25 +36,25 @@ func (s *server) cookieName() string {
 
 func (s *server) secure() bool { return strings.HasPrefix(s.base, "https://") }
 
-func (s *server) setSession(w http.ResponseWriter) {
+// setSession issues the cookie. A renewal keeps the session's id and sign-in
+// time, so signing out and "sign out everywhere" still catch it.
+func (s *server) setSession(w http.ResponseWriter, c claims) {
 	exp := time.Now().Add(sessionTTL)
+	c.Exp = exp.Unix()
 	http.SetCookie(w, &http.Cookie{
-		Name: s.cookieName(), Value: seal(s.tokenKey, "session", claims{Exp: exp.Unix()}),
+		Name: s.cookieName(), Value: seal(s.tokenKey, "session", c),
 		Path: "/", Expires: exp, HttpOnly: true, Secure: s.secure(), SameSite: http.SameSiteLaxMode,
 	})
 }
 
-// session reports whether the request is signed in, and when its cookie expires.
-func (s *server) session(r *http.Request) (time.Time, bool) {
-	ck, err := r.Cookie(s.cookieName())
-	if err != nil {
-		return time.Time{}, false
-	}
+// session returns the request's session if it's signed in.
+func (s *server) session(r *http.Request) (claims, bool) {
 	var c claims
-	if !open(s.tokenKey, ck.Value, "session", &c) {
-		return time.Time{}, false
+	ck, err := r.Cookie(s.cookieName())
+	if err != nil || !open(s.tokenKey, ck.Value, "session", &c) {
+		return c, false
 	}
-	return time.Unix(c.Exp, 0), true
+	return c, s.live(r.Context(), c, "session:"+c.ID)
 }
 
 // sameOrigin blocks cross-site requests that change data. SameSite=Lax already
@@ -81,7 +83,7 @@ func (s *server) requireSession(next http.Handler) http.Handler {
 			http.Error(w, "forbidden origin", http.StatusForbidden)
 			return
 		}
-		exp, ok := s.session(r)
+		c, ok := s.session(r)
 		switch {
 		case !ok && strings.HasPrefix(r.URL.Path, "/api/"):
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Signed out. Reload the page to sign in."})
@@ -89,16 +91,20 @@ func (s *server) requireSession(next http.Handler) http.Handler {
 		case !ok:
 			http.Redirect(w, r, "/login?"+url.Values{"next": {r.URL.RequestURI()}}.Encode(), http.StatusFound)
 			return
-		case time.Until(exp) < sessionTTL/2:
-			s.setSession(w) // keep regular users signed in
+		case time.Until(time.Unix(c.Exp, 0)) < sessionTTL/2:
+			s.setSession(w, c) // keep regular users signed in
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// safeNext keeps the post-login redirect on this site.
+// safeNext keeps the post-login redirect on this site. url.Parse refuses
+// control characters, which matters because browsers delete tabs and newlines
+// from a Location header: "/<TAB>/evil.example" would arrive as //evil.example.
 func safeNext(next string) string {
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, `/\`) {
+	u, err := url.Parse(next)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil ||
+		!strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.Contains(next, `\`) {
 		return "/"
 	}
 	return next
@@ -129,25 +135,42 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	if s.lockedOut(ip) {
-		d.Error = "Too many wrong passwords. Try again in 15 minutes."
-		renderPage(w, http.StatusTooManyRequests, d)
+	if status, msg := s.checkPassword(r, ip, "board sign-in"); status != 0 {
+		d.Error = msg
+		renderPage(w, status, d)
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(r.PostForm.Get("password")), []byte(s.o.Password)) != 1 {
-		s.recordFailure(ip)
-		d.Error = "Wrong password."
-		renderPage(w, http.StatusUnauthorized, d)
-		return
-	}
-	s.setSession(w)
+	log.Printf("auth: board signed in from %s", ip)
+	s.setSession(w, claims{Iat: time.Now().UnixMilli(), ID: rand.Text()})
 	http.Redirect(w, r, d.Params["next"], http.StatusSeeOther)
 }
 
+// logout signs this browser out, or with everywhere=1 every browser and app.
+// Only a signed-in browser may do the latter, since it would otherwise let
+// anyone sign the owner out of everything.
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	if !s.sameOrigin(r) {
 		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	r.ParseForm()
+	if c, ok := s.session(r); ok {
+		var err error
+		if r.PostForm.Get("everywhere") != "" {
+			if err = s.state.RevokeAll(r.Context()); err == nil {
+				log.Printf("auth: every browser and app signed out, from %s", clientIP(r))
+			}
+		} else {
+			// A cookie with this id can't be renewed any more, so none
+			// outlives sessionTTL from now.
+			_, _, err = s.state.Mark(r.Context(), "session:"+c.ID, time.Now().Add(sessionTTL))
+		}
+		if err != nil {
+			log.Printf("auth: sign out: %v", err)
+			http.Error(w, "couldn't sign out, try again", http.StatusInternalServerError)
+			return
+		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secure(), SameSite: http.SameSiteLaxMode})
 	http.Redirect(w, r, "/login", http.StatusSeeOther)

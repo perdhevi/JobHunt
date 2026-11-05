@@ -1,6 +1,18 @@
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { Application, daysSince, Doc, fmtDay, STAGES, today } from "./api";
 
+// webLink returns the job link only if it's http(s). The server refuses other
+// schemes, and this also covers records saved before it did: React 18 still
+// renders a javascript: href.
+function webLink(url: string) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : "";
+  } catch {
+    return "";
+  }
+}
+
 export function docName(docs: Doc[], id: string) {
   if (!id) return "";
   return docs.find((d) => d.id === id)?.name ?? "(deleted version)";
@@ -65,6 +77,7 @@ export function CardBody({ a, docs }: { a: Application; docs: Doc[] }) {
   const d = daysSince(a.applied);
   const letter = docName(docs, a.letterId);
   const resume = docName(docs, a.resumeId);
+  const link = webLink(a.url);
   return (
     <>
       <div className="card-h">
@@ -72,10 +85,10 @@ export function CardBody({ a, docs }: { a: Application; docs: Doc[] }) {
           <div className="co">{a.company}</div>
           <div className="ro">{a.role}</div>
         </div>
-        {a.url && (
+        {link && (
           <a
             className="post-link"
-            href={a.url}
+            href={link}
             target="_blank"
             rel="noopener noreferrer"
             title="Open job post"

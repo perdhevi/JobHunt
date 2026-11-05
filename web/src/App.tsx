@@ -49,8 +49,15 @@ export default function App() {
     refresh();
     api.settings().then(setSettings).catch(() => {});
     api.session().then((s) => setRemote(s.remote)).catch(() => {});
-    const t = setInterval(refresh, POLL_MS);
-    return () => clearInterval(t);
+    // A tab left open in the background would otherwise poll all day.
+    // Coming back to it refreshes at once.
+    const t = setInterval(() => !document.hidden && refresh(), POLL_MS);
+    const onVisible = () => !document.hidden && refresh();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refresh]);
 
   const visible = useMemo(() => {
@@ -197,7 +204,7 @@ export default function App() {
       )}
       {panel === "docs" && <Documents apps={apps} docs={docs} onClose={() => setPanel(null)} onChanged={refresh} />}
       {panel === "export" && <ExportPanel apps={apps} docs={docs} onClose={() => setPanel(null)} />}
-      {panel === "settings" && settings && <SettingsPanel settings={settings} onClose={() => setPanel(null)} onSaved={setSettings} />}
+      {panel === "settings" && settings && <SettingsPanel settings={settings} remote={remote} onClose={() => setPanel(null)} onSaved={setSettings} />}
 
       {closing && (
         <div className="scrim center" onClick={(e) => e.target === e.currentTarget && setClosing(null)}>

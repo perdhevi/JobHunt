@@ -1,11 +1,23 @@
 # jobhunt on a VPS: Caddy terminates HTTPS and forwards only the remote
 # listener, where MCP needs an OAuth login and the board a password sign-in.
 # See DEPLOYMENT.md.
-#   cp .env.example .env && nano .env
+#   cp .env.example .env && chmod 600 .env && nano .env
 #   docker compose up -d --build
 # The bundled Caddy runs only with COMPOSE_PROFILES=caddy in .env. Drop that
 # line when a shared proxy on the VPS forwards to 127.0.0.1:8788 instead.
+#
+# Docker writes its own firewall rules, so a published port is reachable even
+# where ufw says it's closed. Keep every port below on 127.0.0.1.
 name: jobhunt
+
+# Every app on a shared server should cap its memory, processes and logs, so
+# one of them can't starve the others or fill the disk.
+x-logging: &logging
+  driver: local # compressed, and rotated at 3 files of 10 MB per container
+  options:
+    max-size: 10m
+    max-file: "3"
+
 services:
   jobhunt:
     build: ..
@@ -14,19 +26,36 @@ services:
     init: true
     environment:
       JOBHUNT_DB: /data/jobhunt.db
+      # The board without a sign-in listens on a socket only root on the
+      # server can open. On a port, any container sharing its network and any
+      # process on the host could reach it, since its loopback check trusts
+      # the Host header. DEPLOYMENT.md shows how to tunnel to the socket.
+      JOBHUNT_LISTEN: unix:/run/jobhunt/board.sock
       JOBHUNT_REMOTE_LISTEN: 0.0.0.0:8788
       JOBHUNT_PUBLIC_URL: https://${JOBHUNT_DOMAIN:?set JOBHUNT_DOMAIN in .env}
       JOBHUNT_AUTH_PASSWORD: ${JOBHUNT_AUTH_PASSWORD:?set JOBHUNT_AUTH_PASSWORD in .env}
       JOBHUNT_REMOTE_TOKEN: ${JOBHUNT_REMOTE_TOKEN:-}
-      JOBHUNT_REMOTE_BOARD: ${JOBHUNT_REMOTE_BOARD:-true}
+      JOBHUNT_REMOTE_BOARD: ${JOBHUNT_REMOTE_BOARD:-false}
+      JOBHUNT_REDIRECT_HOSTS: ${JOBHUNT_REDIRECT_HOSTS:-}
+      # Lets Go's garbage collector work harder before the memory limit kills it.
+      GOMEMLIMIT: 200MiB
     ports:
-      # The board without a sign-in, for an SSH tunnel. Never publish it publicly.
-      - "127.0.0.1:8787:8787"
       # MCP and the signed-in board, for a proxy running outside this stack.
       - "127.0.0.1:8788:8788"
+    # Only /data, /config, /run/jobhunt and /tmp are writable, and nothing in
+    # the container can gain privileges.
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid,nodev"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    logging: *logging
     volumes:
       - data:/data
       - config:/config
+      - run:/run/jobhunt
 
   caddy:
     image: caddy:2.10-alpine
@@ -39,6 +68,13 @@ services:
       - "443:443/udp"
     environment:
       JOBHUNT_DOMAIN: ${JOBHUNT_DOMAIN}
+    # Caddy faces the internet. It needs to bind ports 80 and 443 and nothing more.
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    pids_limit: 256
+    logging: *logging
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -47,5 +83,6 @@ services:
 volumes:
   data:
   config:
+  run:
   caddy_data:
   caddy_config:

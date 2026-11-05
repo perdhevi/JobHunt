@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -105,10 +106,14 @@ func dueReason(a *Application) string {
 // clean validates input and applies the rules that hold for every writer.
 func (a *Application) clean() error {
 	a.Company, a.Role = strings.TrimSpace(a.Company), strings.TrimSpace(a.Role)
-	a.URL = strings.TrimSpace(a.URL)
 	if a.Company == "" || a.Role == "" {
 		return fmt.Errorf("%w: company and role are required", ErrInvalid)
 	}
+	u, err := cleanLink(a.URL)
+	if err != nil {
+		return err
+	}
+	a.URL = u
 	if a.Track == "" {
 		a.Track = "fulltime"
 	}
@@ -140,6 +145,31 @@ func (a *Application) clean() error {
 		a.Applied = today()
 	}
 	return nil
+}
+
+// cleanLink accepts only web links, because the board renders the job link as
+// a clickable href and agents fill it from pages they've read. A link written
+// without a scheme, such as "linkedin.com/jobs/view/123", gets https.
+func cleanLink(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	bad := fmt.Errorf("%w: the job link must be a web address starting with https:// or http://", ErrInvalid)
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", bad
+	}
+	if u.Scheme == "" {
+		raw = "https://" + strings.TrimLeft(raw, "/")
+		if u, err = url.Parse(raw); err != nil {
+			return "", bad
+		}
+	}
+	if (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return "", bad
+	}
+	return raw, nil
 }
 
 const appColumns = `a.id, a.ref, a.company, a.role, a.track, a.source, a.stage, a.outcome, a.applied, a.comp,

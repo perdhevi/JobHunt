@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,43 @@ func TestDriveToLocalRefusals(t *testing.T) {
 		if _, err := driveToLocal(p, "G"); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: got %v, want %q", p, err, want)
 		}
+	}
+}
+
+// Compose passes every variable it names, so an emptied .env line arrives as
+// "" and must switch the setting off rather than fall back to the file.
+func TestEmptyEnvironmentOverridesFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvConfig, filepath.Join(dir, "config.json"))
+	file := Config{RemoteMCP: RemoteMCP{Listen: "127.0.0.1:8788", Token: "old-token-0123456789abcdef", Board: true, RedirectHosts: []string{"claude.ai"}}}
+	if err := Save(file); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvRemoteToken, "")
+	t.Setenv(EnvRemoteBoard, "")
+	t.Setenv(EnvRedirectHosts, " chatgpt.com, ,claude.ai ")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RemoteMCP.Token != "" || c.RemoteMCP.Board {
+		t.Errorf("emptied variables ignored: %+v", c.RemoteMCP)
+	}
+	if c.RemoteMCP.Listen != "127.0.0.1:8788" {
+		t.Errorf("unset variable overrode the file: %q", c.RemoteMCP.Listen)
+	}
+	if got := strings.Join(c.RemoteMCP.RedirectHosts, ","); got != "chatgpt.com,claude.ai" {
+		t.Errorf("redirect hosts %q", got)
+	}
+
+	// LoadFile is what gets saved back, and it never holds environment values.
+	t.Setenv(EnvAuthPassword, "from-the-environment")
+	f, err := LoadFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.RemoteMCP.Password != "" || f.RemoteMCP.Token != "old-token-0123456789abcdef" {
+		t.Errorf("LoadFile applied the environment: %+v", f.RemoteMCP)
 	}
 }
 

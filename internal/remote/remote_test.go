@@ -179,13 +179,21 @@ func TestOAuthFlow(t *testing.T) {
 	if access == "" {
 		t.Fatalf("token %v", tok)
 	}
-	if res := e.postForm("/token", exchange); res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("code reused: %d", res.StatusCode)
-	}
-
 	if err := e.callMCP(access); err != nil {
 		t.Fatalf("mcp with access token: %v", err)
 	}
+
+	// A code used twice has leaked, so the tokens it gave stop working too.
+	if res := e.postForm("/token", exchange); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("code reused: %d", res.StatusCode)
+	}
+	if err := e.callMCP(access); err == nil {
+		t.Fatal("token from a reused code still works")
+	}
+
+	exchange.Set("code", codeFrom(t, e.login(id, password)))
+	tok = decode[map[string]any](t, e.postForm("/token", exchange))
+	access = tok["access_token"].(string)
 	if err := e.callMCP(tok["refresh_token"].(string)); err == nil {
 		t.Fatal("a refresh token must not work as an access token")
 	}

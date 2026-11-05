@@ -26,8 +26,11 @@ func New(s *store.Store, version string) *mcp.Server {
 	h := &handlers{s: s}
 
 	ro := &mcp.ToolAnnotations{ReadOnlyHint: true}
-	notDestructive := false
+	notDestructive, destructive := false, true
 	write := &mcp.ToolAnnotations{DestructiveHint: &notDestructive}
+	// update_application can replace notes wholesale, so clients that ask
+	// before destructive calls should ask here.
+	overwrite := &mcp.ToolAnnotations{DestructiveHint: &destructive}
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "check_application", Annotations: ro,
 		Description: "Check whether a job is already tracked or was already sent. Call this before preparing or sending anything. Pass the job link when you have one: it is the strongest match. Returns verdict (new, possible_duplicate, already_tracked, already_sent), safeToSend, and the matching records."},
@@ -38,7 +41,7 @@ func New(s *store.Store, version string) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{Name: "mark_sent", Annotations: write,
 		Description: "Record that an application was actually sent: moves it to applied and sets the date. Idempotent: if it was already sent, nothing changes and changed=false, so this also tells you a send already happened."},
 		h.markSent)
-	mcp.AddTool(srv, &mcp.Tool{Name: "update_application", Annotations: write,
+	mcp.AddTool(srv, &mcp.Tool{Name: "update_application", Annotations: overwrite,
 		Description: "Change fields on an application, for example stage, next step, or outcome. Only the fields you pass change. append_notes adds to the notes instead of replacing them. Setting an outcome closes the record."},
 		h.update)
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_application", Annotations: ro,
@@ -63,9 +66,14 @@ func New(s *store.Store, version string) *mcp.Server {
 // server restarts and works with clients that don't keep sessions, such as
 // ChatGPT behind a tunnel.
 func HTTPHandler(srv *mcp.Server) http.Handler {
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv },
+	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	// Tool calls are small JSON. Like the REST API's limit, this keeps one
+	// request from holding megabytes of memory.
+	return http.MaxBytesHandler(h, maxRequest)
 }
+
+const maxRequest = 4 << 20
 
 type handlers struct{ s *store.Store }
 

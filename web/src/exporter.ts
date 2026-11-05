@@ -88,7 +88,14 @@ function toCSV(apps: Application[], docs: Doc[], o: ExportOptions) {
   const { out } = rows(apps, docs, o);
   if (!out.length) return "ref,company,role,track,source,stage,outcome,applied,cover_letter,cover_file,resume,resume_file\n";
   const cols = Object.keys(out[0]);
-  const q = (s: string) => (/[",\n\r]/.test(s ?? "") ? `"${s.replace(/"/g, '""')}"` : s ?? "");
+  // A cell starting with = + - @ or a tab is a formula to Excel and Sheets, and
+  // company names and notes come from job posts an agent read. The quote makes
+  // it text.
+  const inert = (s: string) => (/^[=+\-@\t\r]/.test(s) ? "'" + s : s);
+  const q = (raw: string) => {
+    const s = inert(raw ?? "");
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
   return "﻿" + [cols.join(","), ...out.map((r) => cols.map((c) => q(r[c])).join(","))].join("\r\n");
 }
 

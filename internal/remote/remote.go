@@ -4,8 +4,10 @@
 // a password login page and PKCE. It serves the board only when Options.Board
 // is set, and then only behind the same password (see board.go).
 //
-// Nothing is stored. Client ids, codes and tokens are HMAC-signed claims, so a
-// restart or redeploy doesn't log anyone out, and changing the password does.
+// Client ids, codes and tokens are HMAC-signed claims, so a restart or redeploy
+// doesn't log anyone out, and changing the password does. State stores only
+// what a signature can't express: revocations, and codes and refresh tokens
+// that were already used.
 package remote
 
 import (
@@ -19,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -37,9 +40,19 @@ const (
 	codeTTL    = time.Minute
 	scope      = "jobhunt"
 
+	// A refresh token works once. A client that retries a refresh whose answer
+	// it lost gets this long before the retry counts as theft.
+	reuseLeeway = 30 * time.Second
+
 	maxFailures = 5
 	lockout     = 15 * time.Minute
+	// Wrong passwords from all addresses together, per lockout window. This
+	// caps guessing from many addresses; existing sessions keep working.
+	maxGlobalFailures = 50
 )
+
+// DefaultRedirectHosts are where Claude and ChatGPT receive sign-in codes.
+var DefaultRedirectHosts = []string{"claude.ai", "claude.com", "chatgpt.com"}
 
 // Options configures the listener. OAuth is on when PublicURL and Password are
 // set; Token alone keeps the older static-token behaviour.
@@ -50,20 +63,27 @@ type Options struct {
 	Token     string // optional static token, by header or in the path
 	// Board is the UI and REST API, without loopback checks. Nil keeps it off.
 	Board http.Handler
+	// RedirectHosts limits where sign-in codes may be sent, besides localhost.
+	// Nil means DefaultRedirectHosts.
+	RedirectHosts []string
+	// State records revocations. Nil keeps them in memory.
+	State State
 }
 
 func (o Options) OAuth() bool { return o.PublicURL != "" && o.Password != "" }
 
 type server struct {
-	o         Options
-	base      string
-	clientKey []byte // signs client ids, so they survive a password change
-	tokenKey  []byte // signs codes and tokens, so a password change revokes them
-	mcp       http.Handler
+	o             Options
+	base          string
+	clientKey     []byte // signs client ids, so they survive a password change
+	tokenKey      []byte // signs codes and tokens, so a password change revokes them
+	mcp           http.Handler
+	state         State
+	redirectHosts []string
 
-	mu       sync.Mutex
-	used     map[string]time.Time // spent authorization codes, until they expire
-	failures map[string][]time.Time
+	mu          sync.Mutex
+	failures    map[string][]time.Time
+	allFailures []time.Time
 }
 
 // Handler serves MCP at /mcp behind a bearer token, plus the OAuth endpoints.
@@ -72,10 +92,19 @@ func Handler(next http.Handler, o Options) http.Handler {
 		o:         o,
 		base:      strings.TrimSuffix(o.PublicURL, "/"),
 		clientKey: mac(o.Secret, "client"),
-		tokenKey:  mac(o.Secret, "token\x00"+o.Password),
-		mcp:       next,
-		used:      map[string]time.Time{},
-		failures:  map[string][]time.Time{},
+		// v2 added issue times and token families, so older tokens are refused
+		// and each app signs in once more.
+		tokenKey:      mac(o.Secret, "token/v2\x00"+o.Password),
+		mcp:           next,
+		state:         o.State,
+		redirectHosts: o.RedirectHosts,
+		failures:      map[string][]time.Time{},
+	}
+	if s.state == nil {
+		s.state = newMemState()
+	}
+	if s.redirectHosts == nil {
+		s.redirectHosts = DefaultRedirectHosts
 	}
 	opts := &auth.RequireBearerTokenOptions{}
 	m := http.NewServeMux()
@@ -119,15 +148,40 @@ func (s *server) staticToken(got string) bool {
 	return s.o.Token != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.o.Token)) == 1
 }
 
-func (s *server) verify(_ context.Context, tok string, _ *http.Request) (*auth.TokenInfo, error) {
+func (s *server) verify(ctx context.Context, tok string, _ *http.Request) (*auth.TokenInfo, error) {
 	if s.staticToken(tok) {
 		return &auth.TokenInfo{Scopes: []string{scope}, Expiration: time.Now().Add(time.Hour), UserID: "owner"}, nil
 	}
 	var c claims
-	if !s.o.OAuth() || !open(s.tokenKey, tok, "access", &c) {
+	if !s.o.OAuth() || !open(s.tokenKey, tok, "access", &c) || !s.live(ctx, c, "fam:"+c.Fam) {
 		return nil, auth.ErrInvalidToken
 	}
 	return &auth.TokenInfo{Scopes: []string{scope}, Expiration: time.Unix(c.Exp, 0), UserID: "owner"}, nil
+}
+
+// live reports whether a signed value is still in force: issued after the last
+// "sign out everywhere", and none of the given marks (a revoked session or
+// token family) recorded. It fails closed if the database can't be read.
+func (s *server) live(ctx context.Context, c claims, revoked ...string) bool {
+	cut, err := s.state.RevokedBefore(ctx)
+	if err != nil {
+		log.Printf("auth: read revocations: %v", err)
+		return false
+	}
+	if c.Iat == 0 || c.Iat <= cut.UnixMilli() {
+		return false
+	}
+	for _, id := range revoked {
+		gone, err := s.state.Marked(ctx, id)
+		if err != nil {
+			log.Printf("auth: read revocations: %v", err)
+			return false
+		}
+		if gone {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *server) metadata(w http.ResponseWriter, _ *http.Request) {
@@ -149,7 +203,9 @@ func (s *server) metadata(w http.ResponseWriter, _ *http.Request) {
 type claims struct {
 	K         string   `json:"k"`
 	Exp       int64    `json:"e,omitempty"`
-	ID        string   `json:"i,omitempty"`  // code nonce
+	Iat       int64    `json:"t,omitempty"`  // sign-in time in unix ms, kept across refreshes and renewals
+	Fam       string   `json:"f,omitempty"`  // one sign-in of one app: its code and every token from it
+	ID        string   `json:"i,omitempty"`  // nonce of a code, refresh token or session
 	Client    string   `json:"c,omitempty"`  // client id, on codes and tokens
 	Redirect  string   `json:"r,omitempty"`  // on codes
 	Challenge string   `json:"pk,omitempty"` // on codes
@@ -206,11 +262,26 @@ func validRedirect(raw string) bool {
 	case "https":
 		return true
 	case "http":
-		h := u.Hostname()
-		ip := net.ParseIP(h)
-		return h == "localhost" || (ip != nil && ip.IsLoopback())
+		return isLocal(u.Hostname())
 	}
 	return false
+}
+
+func isLocal(host string) bool {
+	ip := net.ParseIP(host)
+	return strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
+}
+
+// redirectAllowed also limits https redirects to known hosts. Registration is
+// open to anyone, so without this a stranger could register a client named
+// "Claude" that sends your sign-in code to their own site.
+func (s *server) redirectAllowed(raw string) bool {
+	if !validRedirect(raw) {
+		return false
+	}
+	u, _ := url.Parse(raw)
+	h := u.Hostname()
+	return isLocal(h) || slices.ContainsFunc(s.redirectHosts, func(a string) bool { return strings.EqualFold(a, h) })
 }
 
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
@@ -230,6 +301,11 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	for _, u := range in.RedirectURIs {
 		if !validRedirect(u) {
 			regError(w, "invalid_redirect_uri", "redirect_uris must be https, or http on localhost: "+u)
+			return
+		}
+		if !s.redirectAllowed(u) {
+			log.Printf("auth: refused to register %q with redirect %q, host not allowed", in.ClientName, u)
+			regError(w, "invalid_redirect_uri", "this server doesn't send sign-ins to that host. Its owner can add it with JOBHUNT_REDIRECT_HOSTS: "+u)
 			return
 		}
 	}
@@ -314,6 +390,7 @@ func renderPage(w http.ResponseWriter, status int, d pageData) {
 // the client and redirect are known to be good, errors are shown, not redirected,
 // so the endpoint can't be used to bounce someone to an arbitrary site.
 func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	r.ParseForm()
 	q := map[string]string{}
 	for _, k := range []string{"response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource"} {
@@ -332,6 +409,12 @@ func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if !slices.Contains(c.Redirects, redirect) {
 		renderPage(w, http.StatusBadRequest, pageData{Fatal: "The redirect address doesn't match the one this app registered."})
+		return
+	}
+	// Checked again here because a client id stays valid after the allowed
+	// hosts change, and until now nothing may redirect anywhere.
+	if !s.redirectAllowed(redirect) {
+		renderPage(w, http.StatusBadRequest, pageData{Fatal: "This app sends sign-ins to a host this server doesn't allow."})
 		return
 	}
 	back := func(params url.Values) {
@@ -371,44 +454,85 @@ func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	if s.lockedOut(ip) {
-		d.Error = "Too many wrong passwords. Try again in 15 minutes."
-		renderPage(w, http.StatusTooManyRequests, d)
+	if status, msg := s.checkPassword(r, ip, "connector sign-in"); status != 0 {
+		d.Error = msg
+		renderPage(w, status, d)
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(r.PostForm.Get("password")), []byte(s.o.Password)) != 1 {
-		s.recordFailure(ip)
-		d.Error = "Wrong password."
-		renderPage(w, http.StatusUnauthorized, d)
-		return
-	}
+	now := time.Now()
 	code := seal(s.tokenKey, "code", claims{
-		Exp: time.Now().Add(codeTTL).Unix(), ID: rand.Text(),
+		Exp: now.Add(codeTTL).Unix(), Iat: now.UnixMilli(), ID: rand.Text(), Fam: rand.Text(),
 		Client: q["client_id"], Redirect: redirect, Challenge: q["code_challenge"],
 	})
+	log.Printf("auth: %q signed in from %s, returning to %s", client, ip, u.Host)
 	back(url.Values{"code": {code}})
 }
 
+// checkPassword applies the lockout and compares the posted password, logging
+// the outcome. It returns 0 for the right password, otherwise the status and
+// message for the sign-in page.
+func (s *server) checkPassword(r *http.Request, ip, where string) (int, string) {
+	key := lockKey(ip)
+	if s.lockedOut(key) {
+		log.Printf("auth: %s from %s refused, too many wrong passwords", where, ip)
+		return http.StatusTooManyRequests, "Too many wrong passwords. Try again in 15 minutes."
+	}
+	// Comparing MACs keeps the time taken independent of the password's length.
+	if !hmac.Equal(mac(s.clientKey, "pw\x00"+r.PostForm.Get("password")), mac(s.clientKey, "pw\x00"+s.o.Password)) {
+		s.recordFailure(key)
+		log.Printf("auth: wrong password on %s from %s", where, ip)
+		return http.StatusUnauthorized, "Wrong password."
+	}
+	return 0, ""
+}
+
+// lockedOut is true after maxFailures from one address, or maxGlobalFailures
+// from all of them, within the lockout window.
 func (s *server) lockedOut(ip string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	recent := slices.DeleteFunc(s.failures[ip], func(t time.Time) bool { return time.Since(t) > lockout })
+	old := func(t time.Time) bool { return time.Since(t) > lockout }
+	s.allFailures = slices.DeleteFunc(s.allFailures, old)
+	recent := slices.DeleteFunc(s.failures[ip], old)
 	if len(recent) == 0 {
 		delete(s.failures, ip)
 	} else {
 		s.failures[ip] = recent
 	}
-	return len(recent) >= maxFailures
+	return len(recent) >= maxFailures || len(s.allFailures) >= maxGlobalFailures
 }
 
 func (s *server) recordFailure(ip string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.failures[ip] = append(s.failures[ip], time.Now())
+	now := time.Now()
+	s.failures[ip] = append(s.failures[ip], now)
+	s.allFailures = append(s.allFailures, now)
+	// Addresses that never come back would otherwise stay forever.
+	if len(s.failures) > 2*maxGlobalFailures {
+		for k, ts := range s.failures {
+			if now.Sub(ts[len(ts)-1]) > lockout {
+				delete(s.failures, k)
+			}
+		}
+	}
+}
+
+// lockKey is what lockouts count against. An IPv6 machine usually owns a whole
+// /64, so counting single addresses there would give one machine unlimited
+// guesses until the global cap shut everyone out.
+func lockKey(ip string) string {
+	a := net.ParseIP(ip)
+	if a == nil || a.To4() != nil {
+		return ip
+	}
+	return a.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 // clientIP trusts X-Forwarded-For only from a proxy on a private network, which
 // is how Caddy reaches this listener. Caddy overwrites the header it receives.
+// A value that isn't an address is ignored, so it can't reach the log or
+// stand in for a fresh lockout key.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -417,25 +541,11 @@ func clientIP(r *http.Request) string {
 	ip := net.ParseIP(host)
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" && ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
 		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[len(parts)-1])
-	}
-	return host
-}
-
-// spend marks a code used, so a leaked code can't be redeemed a second time.
-func (s *server) spend(id string, exp int64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for k, t := range s.used {
-		if time.Now().After(t) {
-			delete(s.used, k)
+		if fwd := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); fwd != nil {
+			return fwd.String()
 		}
 	}
-	if _, dup := s.used[id]; dup {
-		return false
-	}
-	s.used[id] = time.Unix(exp, 0)
-	return true
+	return host
 }
 
 type tokenError struct {
@@ -463,7 +573,23 @@ func (s *server) token(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, te.status, map[string]string{"error": te.code, "error_description": te.desc})
 		return
 	}
+	if err != nil {
+		log.Printf("auth: token endpoint: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// revokeFamily signs one app out: every token from one sign-in stops working.
+// Nothing in a family outlives refreshTTL from its last refresh, and after
+// this there are no more refreshes, so the mark can expire then.
+func (s *server) revokeFamily(ctx context.Context, fam, why string) {
+	if _, _, err := s.state.Mark(ctx, "fam:"+fam, time.Now().Add(refreshTTL)); err != nil {
+		log.Printf("auth: revoke after %s: %v", why, err)
+		return
+	}
+	log.Printf("auth: %s, signed that app out", why)
 }
 
 func (s *server) grant(r *http.Request) (map[string]any, error) {
@@ -482,6 +608,7 @@ func (s *server) grant(r *http.Request) (map[string]any, error) {
 		return nil, &tokenError{http.StatusUnauthorized, "invalid_client", "wrong client secret"}
 	}
 
+	ctx := r.Context()
 	var g claims
 	switch r.PostForm.Get("grant_type") {
 	case "authorization_code":
@@ -495,20 +622,44 @@ func (s *server) grant(r *http.Request) (map[string]any, error) {
 		if base64.RawURLEncoding.EncodeToString(sum[:]) != g.Challenge {
 			return nil, badGrant("code_verifier doesn't match")
 		}
-		if !s.spend(g.ID, g.Exp) {
+		if !s.live(ctx, g, "fam:"+g.Fam) {
+			return nil, badGrant("code was revoked")
+		}
+		first, _, err := s.state.Mark(ctx, "code:"+g.ID, time.Unix(g.Exp, 0))
+		if err != nil {
+			return nil, err
+		}
+		if !first {
+			// A second redemption means the code leaked. Whoever redeemed it
+			// first may be the thief, so the tokens it got stop working too.
+			s.revokeFamily(ctx, g.Fam, fmt.Sprintf("sign-in code for %q used twice", c.Name))
 			return nil, badGrant("code was already used")
 		}
 	case "refresh_token":
 		if !open(s.tokenKey, r.PostForm.Get("refresh_token"), "refresh", &g) || g.Client != id {
 			return nil, badGrant("refresh token is invalid or expired. Reconnect the app")
 		}
+		if !s.live(ctx, g, "fam:"+g.Fam) {
+			return nil, badGrant("this app was signed out. Reconnect it")
+		}
+		first, at, err := s.state.Mark(ctx, "refresh:"+g.ID, time.Unix(g.Exp, 0))
+		if err != nil {
+			return nil, err
+		}
+		if !first && time.Since(at) > reuseLeeway {
+			// Each refresh hands out a new refresh token, so an old one coming
+			// back means two parties hold it. Sign the app out rather than
+			// guess which one is legitimate.
+			s.revokeFamily(ctx, g.Fam, fmt.Sprintf("old refresh token for %q used again", c.Name))
+			return nil, badGrant("refresh token was already used. Reconnect the app")
+		}
 	default:
 		return nil, &tokenError{http.StatusBadRequest, "unsupported_grant_type", "use authorization_code or refresh_token"}
 	}
 	now := time.Now()
 	return map[string]any{
-		"access_token":  seal(s.tokenKey, "access", claims{Exp: now.Add(accessTTL).Unix(), Client: id}),
-		"refresh_token": seal(s.tokenKey, "refresh", claims{Exp: now.Add(refreshTTL).Unix(), Client: id}),
+		"access_token":  seal(s.tokenKey, "access", claims{Exp: now.Add(accessTTL).Unix(), Iat: g.Iat, Fam: g.Fam, Client: id}),
+		"refresh_token": seal(s.tokenKey, "refresh", claims{Exp: now.Add(refreshTTL).Unix(), Iat: g.Iat, Fam: g.Fam, ID: rand.Text(), Client: id}),
 		"token_type":    "Bearer",
 		"expires_in":    int(accessTTL.Seconds()),
 		"scope":         scope,
@@ -571,6 +722,11 @@ func (o Options) Validate() error {
 	}
 	if len(o.Secret) < 32 {
 		return errors.New("auth secret must be at least 32 bytes")
+	}
+	for _, h := range o.RedirectHosts {
+		if h == "" || strings.ContainsAny(h, "/:@ ") {
+			return fmt.Errorf("redirect hosts must be bare host names such as claude.ai: %q", h)
+		}
 	}
 	return nil
 }

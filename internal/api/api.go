@@ -49,6 +49,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/files/{id}", s.getFile)
 	m.HandleFunc("GET /api/settings", s.getSettings)
 	m.HandleFunc("PUT /api/settings", s.putSettings)
+	m.HandleFunc("GET /healthz", s.health)
 	// The remote listener answers this itself, so the UI knows to offer sign-out.
 	m.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"remote": false})
@@ -94,16 +95,38 @@ func isLoopbackHost(hostport string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// csp allows only the board's own code, plus the Google Fonts stylesheet and
+// font files that index.html loads. It's the backstop if a stored value ever
+// reaches the page as markup or a link.
+const csp = "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; " +
+	"font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; " +
+	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
 // spa serves built assets and falls back to index.html.
 func spa(ui fs.FS) http.Handler {
 	files := http.FileServerFS(ui)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", csp)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "same-origin")
 		p := strings.TrimPrefix(r.URL.Path, "/")
 		if p != "" {
-			if _, err := fs.Stat(ui, p); err != nil {
+			// Folders get index.html too, rather than a file listing.
+			if fi, err := fs.Stat(ui, p); err != nil || fi.IsDir() {
 				r = r.Clone(r.Context())
 				r.URL.Path = "/"
+				p = ""
 			}
+		}
+		// Vite puts a content hash in every asset name, so the browser may keep
+		// them for good and a reload fetches only index.html. Behind the remote
+		// sign-in, that also saves a session check per file.
+		if strings.HasPrefix(p, "assets/") {
+			h.Set("Cache-Control", "private, max-age=31536000, immutable")
+		} else {
+			h.Set("Cache-Control", "no-cache")
 		}
 		files.ServeHTTP(w, r)
 	})
@@ -297,6 +320,20 @@ type settingsDTO struct {
 	ActivePath string `json:"activePath"` // path in use right now
 	ConfigPath string `json:"configPath"`
 	Docker     bool   `json:"docker"`
+	// DBPathFixed is set when JOBHUNT_DB picks the database, as on a VPS. The
+	// board then shows the path without offering to change it.
+	DBPathFixed bool `json:"dbPathFixed"`
+}
+
+// health answers "jobhunt health": the server is up and can read the database.
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err := s.Store.Ping(r.Context()); err != nil {
+		log.Printf("health: %v", err)
+		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Write([]byte("ok\n"))
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -316,11 +353,12 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, settingsDTO{
-		Email:      email,
-		DBPath:     cfg.DBPath,
-		ActivePath: config.HostPath(s.Store.Path()),
-		ConfigPath: cp,
-		Docker:     os.Getenv(config.EnvHostDrive) != "",
+		Email:       email,
+		DBPath:      cfg.DBPath,
+		ActivePath:  config.HostPath(s.Store.Path()),
+		ConfigPath:  cp,
+		Docker:      os.Getenv(config.EnvHostDrive) != "",
+		DBPathFixed: os.Getenv(config.EnvDB) != "",
 	})
 }
 
@@ -332,6 +370,27 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &in) {
 		return
 	}
+	// Checked before anything is saved, so a refused request changes nothing.
+	var dbPath string
+	if in.DBPath != nil {
+		if env := strings.TrimSpace(os.Getenv(config.EnvDB)); env != "" {
+			// The environment wins over config.json, so saving would change
+			// nothing while the board reported success. The board sends the
+			// path back unchanged with every save, which is fine.
+			if strings.TrimSpace(*in.DBPath) != env {
+				writeErr(w, fmt.Errorf("%w: %s sets the database path on this server, so it can't be changed here", store.ErrInvalid, config.EnvDB))
+				return
+			}
+			in.DBPath = nil
+		} else {
+			p, err := config.ValidateDBPath(*in.DBPath)
+			if err != nil {
+				writeErr(w, fmt.Errorf("%w: %v", store.ErrInvalid, err))
+				return
+			}
+			dbPath = p
+		}
+	}
 	if in.Email != nil {
 		if err := s.Store.SetSetting(r.Context(), store.SettingEmail, strings.TrimSpace(*in.Email)); err != nil {
 			writeErr(w, err)
@@ -339,17 +398,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if in.DBPath != nil {
-		p, err := config.ValidateDBPath(*in.DBPath)
-		if err != nil {
-			writeErr(w, fmt.Errorf("%w: %v", store.ErrInvalid, err))
-			return
-		}
-		cfg, err := config.Load()
+		// The file alone, so the password and token from the environment
+		// aren't written into it.
+		cfg, err := config.LoadFile()
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
-		cfg.DBPath = p
+		cfg.DBPath = dbPath
 		if err := config.Save(cfg); err != nil {
 			writeErr(w, err)
 			return

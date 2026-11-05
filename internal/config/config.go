@@ -32,16 +32,22 @@ const (
 	EnvAuthPassword = "JOBHUNT_AUTH_PASSWORD" // overrides remoteMcp.password
 	EnvAuthSecret   = "JOBHUNT_AUTH_SECRET"   // overrides the generated auth.secret file
 	EnvRemoteBoard  = "JOBHUNT_REMOTE_BOARD"  // overrides remoteMcp.board
+	// Overrides remoteMcp.redirectHosts, as a comma-separated list.
+	EnvRedirectHosts = "JOBHUNT_REDIRECT_HOSTS"
 
 	DefaultListen = "127.0.0.1:8787"
 	DriveMount    = "/drive"
+
+	// UnixPrefix makes a listen address a socket path: unix:/run/jobhunt/board.sock.
+	UnixPrefix = "unix:"
 )
 
 type Config struct {
 	// DBPath is the SQLite file, typically under "G:\My Drive\...".
 	DBPath string `json:"dbPath"`
-	// Listen is the UI, REST API and local MCP address. Keep it on loopback.
-	Listen string `json:"listen"`
+	// Listen is the UI, REST API and local MCP address. Keep it on loopback,
+	// or on a socket (UnixPrefix) where other programs share the machine.
+	Listen string `json:"listen,omitempty"`
 	// RemoteMCP optionally opens a second listener for tunnels (see README).
 	RemoteMCP RemoteMCP `json:"remoteMcp,omitempty"`
 }
@@ -57,6 +63,9 @@ type RemoteMCP struct {
 	Token string `json:"token,omitempty"`
 	// Board also serves the UI on this listener, behind the same password.
 	Board bool `json:"board,omitempty"`
+	// RedirectHosts are the hosts OAuth may send a sign-in code to. Empty means
+	// Claude's and ChatGPT's. This machine (localhost) is always allowed.
+	RedirectHosts []string `json:"redirectHosts,omitempty"`
 }
 
 // Path returns the config file location.
@@ -71,9 +80,11 @@ func Path() (string, error) {
 	return filepath.Join(dir, "JobHunt", "config.json"), nil
 }
 
-// Load reads the config file, tolerating its absence, and applies defaults and
-// the JOBHUNT_DB override.
-func Load() (Config, error) {
+// LoadFile reads only the config file, tolerating its absence, without
+// defaults or environment overrides. Change and save this, never Load's
+// result: that also holds values from the environment, such as the password,
+// which must not end up on disk.
+func LoadFile() (Config, error) {
 	var c Config
 	p, err := Path()
 	if err != nil {
@@ -88,30 +99,45 @@ func Load() (Config, error) {
 	case !errors.Is(err, os.ErrNotExist):
 		return c, err
 	}
+	return c, nil
+}
+
+// Load reads the config file and applies defaults and environment overrides.
+//
+// The remote settings follow the environment whenever a variable is set, even
+// to "". Compose passes every variable it names, so emptying a line in .env
+// must switch that setting off, not fall back to an older value in the file.
+func Load() (Config, error) {
+	c, err := LoadFile()
+	if err != nil {
+		return c, err
+	}
 	if v := os.Getenv(EnvListen); v != "" {
 		c.Listen = v
 	}
 	if c.Listen == "" {
 		c.Listen = DefaultListen
 	}
-	if v := os.Getenv(EnvRemoteListen); v != "" {
-		c.RemoteMCP.Listen = v
-	}
-	if v := os.Getenv(EnvRemoteToken); v != "" {
-		c.RemoteMCP.Token = v
-	}
-	if v := os.Getenv(EnvPublicURL); v != "" {
-		c.RemoteMCP.PublicURL = v
-	}
-	if v := os.Getenv(EnvAuthPassword); v != "" {
-		c.RemoteMCP.Password = v
-	}
-	if v := os.Getenv(EnvRemoteBoard); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			return c, fmt.Errorf("%s must be true or false: %q", EnvRemoteBoard, v)
+	override(EnvRemoteListen, &c.RemoteMCP.Listen)
+	override(EnvRemoteToken, &c.RemoteMCP.Token)
+	override(EnvPublicURL, &c.RemoteMCP.PublicURL)
+	override(EnvAuthPassword, &c.RemoteMCP.Password)
+	if v, ok := os.LookupEnv(EnvRemoteBoard); ok {
+		b := false
+		if v != "" {
+			if b, err = strconv.ParseBool(v); err != nil {
+				return c, fmt.Errorf("%s must be true or false: %q", EnvRemoteBoard, v)
+			}
 		}
 		c.RemoteMCP.Board = b
+	}
+	if v, ok := os.LookupEnv(EnvRedirectHosts); ok {
+		c.RemoteMCP.RedirectHosts = nil
+		for _, h := range strings.Split(v, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				c.RemoteMCP.RedirectHosts = append(c.RemoteMCP.RedirectHosts, h)
+			}
+		}
 	}
 	if v := os.Getenv(EnvDB); v != "" {
 		c.DBPath = v
@@ -129,7 +155,14 @@ func Load() (Config, error) {
 	return c, nil
 }
 
+func override(name string, dst *string) {
+	if v, ok := os.LookupEnv(name); ok {
+		*dst = v
+	}
+}
+
 // Save writes the config file atomically so a crash can't leave it half-written.
+// Pass it what LoadFile returned, so environment values stay off the disk.
 func Save(c Config) error {
 	p, err := Path()
 	if err != nil {
