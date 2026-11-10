@@ -4,14 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"jobhunt/internal/radar"
 	"jobhunt/internal/store"
 )
 
 func session(t *testing.T) *mcp.ClientSession {
+	t.Helper()
+	_, cs := sessionWithStore(t)
+	return cs
+}
+
+func sessionWithStore(t *testing.T) (*store.Store, *mcp.ClientSession) {
 	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
@@ -28,7 +36,21 @@ func session(t *testing.T) *mcp.ClientSession {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cs.Close() })
-	return cs
+	return s, cs
+}
+
+// callErr calls a tool that should fail and returns the error text.
+func callErr(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) string {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		return err.Error()
+	}
+	if !res.IsError {
+		t.Fatalf("%s should have failed: %+v", name, res.StructuredContent)
+	}
+	b, _ := json.Marshal(res.Content)
+	return string(b)
 }
 
 func call[T any](t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) T {
@@ -159,5 +181,93 @@ func TestLeadTools(t *testing.T) {
 	}
 	if l := call[leadsOut](t, cs, "list_leads", map[string]any{"include_tracked": true}); l.Total != 2 || l.Leads[1].Application.Stage != "skipped" {
 		t.Fatalf("%+v", l)
+	}
+}
+
+// With the default skills.json, Python and Swift are "have", Go is
+// "learning", and Docker and Kubernetes are gaps.
+func TestSkillTools(t *testing.T) {
+	s, cs := sessionWithStore(t)
+	ctx := context.Background()
+	if err := s.SaveLeads(ctx, []store.Lead{{UID: "wwr:y", Source: "wwr", SourceName: "We Work Remotely", Title: "Platform Engineer",
+		Company: "Lumen", URL: "https://weworkremotely.com/remote-jobs/y", Score: 9, Snippet: "Python, Docker and Kubernetes"}}, "2026-11-10"); err != nil {
+		t.Fatal(err)
+	}
+
+	py := call[savedEvidenceOut](t, cs, "add_skill_evidence", map[string]any{"skill": "python", "kind": "repo", "title": "jobhunt",
+		"url": "https://github.com/perdhevi/JobHunt", "note": "Go and Python tooling"})
+	if py.Evidence.Skill != "Python" || py.Status != "have" || py.Message != "Proof recorded." {
+		t.Errorf("skill should be matched to its tracked spelling: %+v", py)
+	}
+	dk := call[savedEvidenceOut](t, cs, "add_skill_evidence", map[string]any{"skill": "Docker", "kind": "project", "title": "compose stack"})
+	if dk.Status != "gap" || !strings.Contains(dk.Message, "Docker is gap in the profile") {
+		t.Errorf("proof for a gap should say it stays a gap: %+v", dk)
+	}
+	if typo := call[savedEvidenceOut](t, cs, "add_skill_evidence", map[string]any{"skill": "Pythn", "kind": "course", "title": "x"}); !strings.Contains(typo.Message, "isn't a skill") {
+		t.Errorf("an unknown skill should be flagged: %+v", typo)
+	}
+	if msg := callErr(t, cs, "add_skill_evidence", map[string]any{"skill": "Go", "kind": "rumour", "title": "x"}); !strings.Contains(msg, "kind must be one of") {
+		t.Errorf("bad kind: %s", msg)
+	}
+	if msg := callErr(t, cs, "add_skill_evidence", map[string]any{"skill": "Go", "kind": "repo", "title": "x", "url": "javascript:alert(1)"}); !strings.Contains(msg, "web address") {
+		t.Errorf("non-web link: %s", msg)
+	}
+
+	l := call[leadsOut](t, cs, "list_leads", map[string]any{})
+	got := map[string]string{}
+	for _, sk := range l.Leads[0].Skills {
+		got[sk.Skill] = sk.Proof
+	}
+	if got["Python"] != "proven" || got["Docker"] != "gap" || got["Kubernetes"] != "gap" {
+		t.Errorf("lead skill marks: %v", got)
+	}
+	if l.Leads[0].Snippet != "" {
+		t.Error("snippet should be left out of list_leads")
+	}
+
+	if g := call[setGoalOut](t, cs, "set_skill_goal", map[string]any{"skill": "kubernetes", "goal": "k3s deploy", "due": "2026-12-01"}); g.Goal.Skill != "Kubernetes" || g.Message != "Goal set." {
+		t.Errorf("%+v", g)
+	}
+	if msg := callErr(t, cs, "set_skill_goal", map[string]any{"skill": "Go", "goal": "x", "due": "soon"}); !strings.Contains(msg, "YYYY-MM-DD") {
+		t.Errorf("bad due date: %s", msg)
+	}
+	rep := call[radar.SkillReport](t, cs, "skill_gaps", map[string]any{})
+	mine := map[string]radar.SkillRow{}
+	for _, r := range rep.Mine {
+		mine[r.Skill] = r
+	}
+	if rep.Proven != 1 || mine["Kubernetes"].Goal != "k3s deploy" || mine["Docker"].Proof != 1 || mine["Docker"].Status != "gap" {
+		t.Errorf("report: proven %d, mine %+v", rep.Proven, rep.Mine)
+	}
+
+	ev := call[evidenceOut](t, cs, "list_skill_evidence", map[string]any{"skill": "docker"})
+	if len(ev.Evidence) != 1 || len(ev.Kinds) == 0 {
+		t.Fatalf("%+v", ev)
+	}
+	up := call[savedEvidenceOut](t, cs, "update_skill_evidence", map[string]any{"id": dk.Evidence.ID, "title": "compose stack on a VPS"})
+	if up.Evidence.Title != "compose stack on a VPS" || up.Evidence.Kind != "project" || up.Evidence.CreatedAt != dk.Evidence.CreatedAt {
+		t.Errorf("only the title should change: %+v", up.Evidence)
+	}
+	if msg := callErr(t, cs, "update_skill_evidence", map[string]any{"id": "nope", "title": "x"}); !strings.Contains(msg, "not found") {
+		t.Errorf("missing id: %s", msg)
+	}
+	if ev := call[evidenceOut](t, cs, "list_skill_evidence", map[string]any{}); len(ev.Evidence) != 3 || len(ev.Goals) != 1 {
+		t.Errorf("all proof: %+v", ev)
+	}
+	if g := call[setGoalOut](t, cs, "set_skill_goal", map[string]any{"skill": "Kubernetes", "goal": ""}); g.Message != "Goal removed." {
+		t.Errorf("%+v", g)
+	}
+}
+
+// Deleting stays in the UI: no MCP tool can remove a record.
+func TestNoDeleteTools(t *testing.T) {
+	res, err := session(t).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range res.Tools {
+		if strings.Contains(tool.Name, "delete") || strings.Contains(tool.Name, "remove") {
+			t.Errorf("unexpected delete tool %s", tool.Name)
+		}
 	}
 }

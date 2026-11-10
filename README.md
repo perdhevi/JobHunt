@@ -150,10 +150,14 @@ In Docker, the `JOBHUNT_*` variables in `.env` always win over `config.json`, ev
 | `get_application`, `list_applications` | Read records, by id, `+ref` or filter. |
 | `list_follow_ups`, `pipeline_summary` | What is due, and the headline numbers. |
 | `list_documents` | Cover letter and resume versions. |
-| `list_leads` | Job Radar's open leads, best score first. |
+| `list_leads` | Job Radar's open leads, best score first, each with the skills it asks for marked proven, claimed, learning or gap. |
 | `save_lead`, `skip_lead` | Put a lead on the board as saved, or skip it with a reason. |
+| `skill_gaps` | The skill-gap report: what recent listings ask for against your profile, your top gaps, coverage, and proven vs claimed counts. |
+| `list_skill_evidence` | Proof and goals recorded for skills, optionally for one skill. |
+| `add_skill_evidence`, `update_skill_evidence` | Record or correct proof for a skill. Skill names are matched to `skills.json`'s spelling, and a name it doesn't know is flagged. |
+| `set_skill_goal` | Set or clear a skill's goal and date. |
 
-There is deliberately no delete tool. Deleting happens only in the UI.
+There is deliberately no delete tool. Deleting happens only in the UI, including deleting proof. Proof and goals never change a skill's status: only your profile in Radar > Settings does.
 
 ## How duplicates are prevented
 

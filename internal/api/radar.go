@@ -18,15 +18,9 @@ type radarStateDTO struct {
 	Leads []leadDTO `json:"leads"`
 }
 
-// leadSkill is a skill a listing asks for, and what you can show for it.
-type leadSkill struct {
-	Skill string `json:"skill"`
-	Proof string `json:"proof"` // proven, claimed, learning or gap
-}
-
 type leadDTO struct {
 	store.Lead
-	Skills []leadSkill `json:"skills"`
+	Skills []radar.LeadSkill `json:"skills"`
 }
 
 // radarState is everything the Radar view lists: run status and stored leads,
@@ -44,41 +38,17 @@ func (s *Server) radarState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := radarStateDTO{Status: st, Leads: make([]leadDTO, len(leads))}
-	for i, l := range leads {
-		out.Leads[i] = leadDTO{Lead: l, Skills: []leadSkill{}}
-	}
 	// Skill marks are a convenience: settings that don't parse leave them off
 	// (the header already reports the problem) instead of failing the list.
-	model, _, err := s.Radar.Skills(ctx)
-	if err == nil {
-		observed, err := s.Store.LeadSkills(ctx)
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		ev, err := s.Store.ListEvidence(ctx)
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		proof := map[string]int{}
-		for _, e := range ev {
-			proof[e.Skill]++
-		}
-		for i := range out.Leads {
-			l := &out.Leads[i].Lead
-			skills, ok := observed[l.UID]
-			for _, u := range l.AltUIDs {
-				if !ok {
-					skills, ok = observed[u]
-				}
-			}
-			if !ok { // recorded before skills were observed: use what's stored
-				skills = model.Extract(l.Title + "\n" + l.Snippet)
-			}
-			for _, sk := range skills {
-				out.Leads[i].Skills = append(out.Leads[i].Skills, leadSkill{sk, model.Proof(sk, proof)})
-			}
+	marks, err := s.Radar.LeadSkills(ctx, leads)
+	if err != nil && !errors.Is(err, radar.ErrSkillsSettings) {
+		writeErr(w, err)
+		return
+	}
+	for i, l := range leads {
+		out.Leads[i] = leadDTO{Lead: l, Skills: []radar.LeadSkill{}}
+		if marks != nil {
+			out.Leads[i].Skills = marks[i]
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -141,30 +111,14 @@ func (s *Server) radarAct(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) radarSkills(w http.ResponseWriter, r *http.Request) {
-	m, _, err := s.Radar.Skills(r.Context())
-	if err != nil {
-		writeErr(w, fmt.Errorf("%w: %v", store.ErrInvalid, err))
-		return
+	rep, err := s.Radar.SkillReport(r.Context(), time.Now())
+	if errors.Is(err, radar.ErrSkillsSettings) {
+		err = fmt.Errorf("%w: %v", store.ErrInvalid, err)
 	}
-	ctx := r.Context()
-	now := time.Now()
-	obs, err := s.Store.SkillObservations(ctx, now.AddDate(-1, 0, 0).Format("2006-01-02"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	ev, err := s.Store.ListEvidence(ctx)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	goals, err := s.Store.ListGoals(ctx)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	rep := m.Report(obs, now)
-	m.AddProof(&rep, ev, goals)
 	writeJSON(w, http.StatusOK, rep)
 }
 
