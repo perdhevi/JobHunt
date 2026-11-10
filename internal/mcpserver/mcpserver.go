@@ -6,12 +6,15 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"jobhunt/internal/radar"
 	"jobhunt/internal/store"
 )
 
@@ -20,12 +23,16 @@ ALWAYS call check_application before preparing or sending an application, and do
 A "skipped" verdict means the user decided not to apply; it gives the reason. Don't apply unless the user moves it out of Skipped.
 After the application actually goes out, call mark_sent. Never call mark_sent for something that was only drafted.
 add_application refuses duplicates, so retrying it is safe.
-Job Radar finds leads on job boards every day: list_leads shows them, save_lead puts one on the board, skip_lead records why not.`
+Job Radar finds leads on job boards every day: list_leads shows them, save_lead puts one on the board, skip_lead records why not.
+Each lead lists the skills it asks for, marked proven, claimed, learning or gap; skill_gaps sums this up across recent listings.
+Proof (add_skill_evidence) must be something the user actually did and told you about: never invent or embellish it.
+A skill's status (have, learning, gap) comes only from the user's profile in the Radar settings; proof and goals never change it.`
 
 // New builds a server with all tools registered.
 func New(s *store.Store, version string) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "jobhunt", Version: version}, &mcp.ServerOptions{Instructions: instructions})
-	h := &handlers{s: s}
+	// The radar here only reads settings and the store; scans run in serve.
+	h := &handlers{s: s, rd: &radar.Radar{Store: s}}
 
 	ro := &mcp.ToolAnnotations{ReadOnlyHint: true}
 	notDestructive, destructive := false, true
@@ -50,8 +57,23 @@ func New(s *store.Store, version string) *mcp.Server {
 		Description: "Move an application to Skipped, with the reason and details, when the user decides not to apply. Reasons: " + reasonList() + ". other needs details. A skipped job stays on record so it isn't picked up again."},
 		h.skip)
 	mcp.AddTool(srv, &mcp.Tool{Name: "list_leads", Annotations: ro,
-		Description: "List Job Radar's leads: scored listings from job boards and target companies' career pages, best score first. By default only leads not yet on the board; each has an id to pass to save_lead or skip_lead, its board link, warnings (flags) such as location or time-zone limits, and what it matched."},
+		Description: "List Job Radar's leads: scored listings from job boards and target companies' career pages, best score first. By default only leads not yet on the board; each has an id to pass to save_lead or skip_lead, its board link, warnings (flags) such as location or time-zone limits, and what it matched. skills lists what the listing asks for, each marked proven (the user has it and has proof), claimed (has it, no proof yet), learning or gap, so you know what the user can point to before applying."},
 		h.leads)
+	mcp.AddTool(srv, &mcp.Tool{Name: "skill_gaps", Annotations: ro,
+		Description: "The skill-gap report: which tracked skills recent relevant listings ask for, how often (count, share in percent), and the user's status for each: have, learning or gap, from their profile. gaps is the ten most requested skills the user doesn't have. coverage is the percent of a typical listing's skills the user has. mine lists the user's own skills, plus any with proof or a goal, even if no listing asked for them. proven and claimed count \"have\" skills with and without proof. Each row carries its proof count and goal. enough=false means too few listings yet (fewer than minJobs) for counts to mean much."},
+		h.skillGaps)
+	mcp.AddTool(srv, &mcp.Tool{Name: "list_skill_evidence", Annotations: ro,
+		Description: "List the proof recorded for skills (running projects, repos, certificates, courses, write-ups, work examples, each with a link and what it shows) and the user's goals for skills, optionally for one skill. Evidence ids are what update_skill_evidence takes. Proof can only be removed by the user, in the web UI."},
+		h.listEvidence)
+	mcp.AddTool(srv, &mcp.Tool{Name: "add_skill_evidence", Annotations: write,
+		Description: "Record proof for a skill that an employer could check: kind is " + strings.Join(store.EvidenceKinds, ", ") + " (roughly strongest first). Only record what the user actually did and told you about, in their terms; never invent or embellish proof, links or dates. Use the skill's name as skill_gaps spells it; a known skill is matched without regard to case. Proof never changes the skill's status: a gap with proof is still a gap until the user adds it to their profile in the Radar settings. message says when the skill isn't tracked or isn't in the profile."},
+		h.addEvidence)
+	mcp.AddTool(srv, &mcp.Tool{Name: "update_skill_evidence", Annotations: overwrite,
+		Description: "Change fields on one piece of proof, by id from list_skill_evidence. Only the fields you pass change."},
+		h.updateEvidence)
+	mcp.AddTool(srv, &mcp.Tool{Name: "set_skill_goal", Annotations: overwrite,
+		Description: "Set what the user plans to do about a skill, and optionally by when. Replaces the skill's existing goal; an empty goal removes it. Like proof, a goal never changes the skill's status."},
+		h.setGoal)
 	mcp.AddTool(srv, &mcp.Tool{Name: "save_lead", Annotations: write,
 		Description: "Put a Job Radar lead on the board in the saved stage, with its details in the notes. Runs the duplicate check: if the job is already on the board, nothing is written and created=false. Call mark_sent later, once the application actually goes out."},
 		h.saveLead)
@@ -89,7 +111,10 @@ func HTTPHandler(srv *mcp.Server) http.Handler {
 
 const maxRequest = 4 << 20
 
-type handlers struct{ s *store.Store }
+type handlers struct {
+	s  *store.Store
+	rd *radar.Radar
+}
 
 type checkIn struct {
 	Company string `json:"company" jsonschema:"company or client name"`
@@ -322,9 +347,14 @@ type leadsIn struct {
 	Limit          int    `json:"limit,omitempty" jsonschema:"maximum results, default 30"`
 }
 
+type leadOut struct {
+	store.Lead
+	Skills []radar.LeadSkill `json:"skills"`
+}
+
 type leadsOut struct {
-	Total int          `json:"total"`
-	Leads []store.Lead `json:"leads"`
+	Total int       `json:"total"`
+	Leads []leadOut `json:"leads"`
 }
 
 func (h *handlers) leads(ctx context.Context, _ *mcp.CallToolRequest, in leadsIn) (*mcp.CallToolResult, leadsOut, error) {
@@ -337,7 +367,8 @@ func (h *handlers) leads(ctx context.Context, _ *mcp.CallToolRequest, in leadsIn
 		limit = 30
 	}
 	q := strings.ToLower(strings.TrimSpace(in.Query))
-	out := leadsOut{Leads: []store.Lead{}}
+	out := leadsOut{Leads: []leadOut{}}
+	var shown []store.Lead
 	for _, l := range all {
 		if (l.Application != nil && !in.IncludeTracked) || l.Score < in.MinScore {
 			continue
@@ -346,12 +377,189 @@ func (h *handlers) leads(ctx context.Context, _ *mcp.CallToolRequest, in leadsIn
 			continue
 		}
 		out.Total++
-		if len(out.Leads) < limit {
-			l.Snippet = "" // keeps replies small; the board link has the full text
-			out.Leads = append(out.Leads, l)
+		if len(shown) < limit {
+			shown = append(shown, l)
+		}
+	}
+	// Like the board, skills settings that don't load leave the marks off
+	// rather than hiding the leads.
+	marks, err := h.rd.LeadSkills(ctx, shown)
+	if err != nil && !errors.Is(err, radar.ErrSkillsSettings) {
+		return nil, leadsOut{}, err
+	}
+	for i, l := range shown {
+		lo := leadOut{Lead: l, Skills: []radar.LeadSkill{}}
+		if marks != nil {
+			lo.Skills = marks[i]
+		}
+		lo.Snippet = "" // keeps replies small; the board link has the full text
+		out.Leads = append(out.Leads, lo)
+	}
+	return nil, out, nil
+}
+
+func (h *handlers) skillGaps(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, radar.SkillReport, error) {
+	rep, err := h.rd.SkillReport(ctx, time.Now())
+	return nil, rep, err
+}
+
+type evidenceIn struct {
+	Skill string `json:"skill,omitempty" jsonschema:"only this skill's proof and goal"`
+}
+
+type evidenceOut struct {
+	Evidence []store.Evidence  `json:"evidence"`
+	Goals    []store.SkillGoal `json:"goals"`
+	Kinds    []string          `json:"kinds"`
+}
+
+func (h *handlers) listEvidence(ctx context.Context, _ *mcp.CallToolRequest, in evidenceIn) (*mcp.CallToolResult, evidenceOut, error) {
+	ev, err := h.s.ListEvidence(ctx)
+	if err != nil {
+		return nil, evidenceOut{}, err
+	}
+	goals, err := h.s.ListGoals(ctx)
+	if err != nil {
+		return nil, evidenceOut{}, err
+	}
+	out := evidenceOut{Evidence: ev, Goals: goals, Kinds: store.EvidenceKinds}
+	if skill := strings.TrimSpace(in.Skill); skill != "" {
+		if m, _, err := h.rd.Skills(ctx); err == nil {
+			skill, _ = m.Canonical(skill)
+		}
+		out.Evidence, out.Goals = []store.Evidence{}, []store.SkillGoal{}
+		for _, e := range ev {
+			if strings.EqualFold(e.Skill, skill) {
+				out.Evidence = append(out.Evidence, e)
+			}
+		}
+		for _, g := range goals {
+			if strings.EqualFold(g.Skill, skill) {
+				out.Goals = append(out.Goals, g)
+			}
 		}
 	}
 	return nil, out, nil
+}
+
+// checkSkill spells a skill the way skills.json does and returns its status in
+// the profile, with a warning when the name isn't known, so a typo doesn't
+// pass unnoticed.
+func (h *handlers) checkSkill(ctx context.Context, skill string) (canonical, status, warning string) {
+	m, _, err := h.rd.Skills(ctx)
+	if err != nil {
+		return strings.TrimSpace(skill), "", "The skills settings could not be loaded, so the skill name wasn't checked."
+	}
+	canonical, known := m.Canonical(skill)
+	if !known {
+		warning = canonical + " isn't a skill the radar tracks or the profile lists; check the spelling against skill_gaps. It was recorded as given."
+	}
+	return canonical, m.Status(canonical), warning
+}
+
+// proofMessage reminds the caller that proof for a skill the user doesn't
+// list as "have" leaves it a gap or learning.
+func proofMessage(done, skill, status, warning string) string {
+	msg := done
+	if status != "" && status != "have" {
+		msg += " " + skill + " is " + status + " in the profile; proof doesn't change that. The user can move it to have in the Radar skills settings."
+	}
+	if warning != "" {
+		msg += " " + warning
+	}
+	return msg
+}
+
+type addEvidenceIn struct {
+	Skill string `json:"skill" jsonschema:"the skill this proves, as skill_gaps spells it"`
+	Kind  string `json:"kind" jsonschema:"project, repo, certificate, course, writeup or work"`
+	Title string `json:"title" jsonschema:"short name of the project, repo, certificate or piece of work"`
+	URL   string `json:"url,omitempty" jsonschema:"https:// link an employer can open"`
+	Date  string `json:"date,omitempty" jsonschema:"when it was done, YYYY-MM-DD"`
+	Note  string `json:"note,omitempty" jsonschema:"what it shows about the skill, in the user's words"`
+}
+
+type savedEvidenceOut struct {
+	Evidence store.Evidence `json:"evidence"`
+	Status   string         `json:"status,omitempty" jsonschema:"the skill's status in the profile: have, learning or gap"`
+	Message  string         `json:"message"`
+}
+
+func (h *handlers) addEvidence(ctx context.Context, _ *mcp.CallToolRequest, in addEvidenceIn) (*mcp.CallToolResult, savedEvidenceOut, error) {
+	skill, status, warning := h.checkSkill(ctx, in.Skill)
+	e, err := h.s.SaveEvidence(ctx, store.Evidence{Skill: skill, Kind: in.Kind, Title: in.Title, URL: in.URL, Date: in.Date, Note: in.Note})
+	if err != nil {
+		return nil, savedEvidenceOut{}, err
+	}
+	return nil, savedEvidenceOut{Evidence: e, Status: status, Message: proofMessage("Proof recorded.", skill, status, warning)}, nil
+}
+
+type updateEvidenceIn struct {
+	ID    string  `json:"id" jsonschema:"evidence id from list_skill_evidence"`
+	Skill *string `json:"skill,omitempty" jsonschema:"the skill this proves"`
+	Kind  *string `json:"kind,omitempty" jsonschema:"project, repo, certificate, course, writeup or work"`
+	Title *string `json:"title,omitempty" jsonschema:"short name"`
+	URL   *string `json:"url,omitempty" jsonschema:"https:// link, or empty to clear"`
+	Date  *string `json:"date,omitempty" jsonschema:"YYYY-MM-DD, or empty to clear"`
+	Note  *string `json:"note,omitempty" jsonschema:"what it shows; replaces the note"`
+}
+
+func (h *handlers) updateEvidence(ctx context.Context, _ *mcp.CallToolRequest, in updateEvidenceIn) (*mcp.CallToolResult, savedEvidenceOut, error) {
+	all, err := h.s.ListEvidence(ctx)
+	if err != nil {
+		return nil, savedEvidenceOut{}, err
+	}
+	var e *store.Evidence
+	for i := range all {
+		if all[i].ID == in.ID {
+			e = &all[i]
+		}
+	}
+	if e == nil {
+		return nil, savedEvidenceOut{}, fmt.Errorf("%w: evidence %q", store.ErrNotFound, in.ID)
+	}
+	for _, f := range []struct {
+		dst *string
+		src *string
+	}{{&e.Skill, in.Skill}, {&e.Kind, in.Kind}, {&e.Title, in.Title}, {&e.URL, in.URL}, {&e.Date, in.Date}, {&e.Note, in.Note}} {
+		if f.src != nil {
+			*f.dst = *f.src
+		}
+	}
+	skill, status, warning := h.checkSkill(ctx, e.Skill)
+	e.Skill = skill
+	got, err := h.s.SaveEvidence(ctx, *e)
+	if err != nil {
+		return nil, savedEvidenceOut{}, err
+	}
+	return nil, savedEvidenceOut{Evidence: got, Status: status, Message: proofMessage("Proof updated.", skill, status, warning)}, nil
+}
+
+type setGoalIn struct {
+	Skill string `json:"skill" jsonschema:"the skill, as skill_gaps spells it"`
+	Goal  string `json:"goal" jsonschema:"what the user plans to do, in their words; empty removes the goal"`
+	Due   string `json:"due,omitempty" jsonschema:"target date, YYYY-MM-DD"`
+}
+
+type setGoalOut struct {
+	Goal    store.SkillGoal `json:"goal"`
+	Status  string          `json:"status,omitempty" jsonschema:"the skill's status in the profile: have, learning or gap"`
+	Message string          `json:"message"`
+}
+
+func (h *handlers) setGoal(ctx context.Context, _ *mcp.CallToolRequest, in setGoalIn) (*mcp.CallToolResult, setGoalOut, error) {
+	skill, status, warning := h.checkSkill(ctx, in.Skill)
+	g, err := h.s.SetGoal(ctx, store.SkillGoal{Skill: skill, Goal: in.Goal, Due: in.Due})
+	if err != nil {
+		return nil, setGoalOut{}, err
+	}
+	msg := "Goal set."
+	if g.Goal == "" {
+		msg = "Goal removed."
+	} else if warning != "" {
+		msg += " " + warning
+	}
+	return nil, setGoalOut{Goal: g, Status: status, Message: msg}, nil
 }
 
 type saveLeadIn struct {

@@ -152,10 +152,7 @@ func (m *SkillModel) Extract(text string) []string {
 
 // AddProof fills in proof counts and goals, and lists your own skills.
 func (m *SkillModel) AddProof(r *SkillReport, ev []store.Evidence, goals []store.SkillGoal) {
-	proof := map[string]int{}
-	for _, e := range ev {
-		proof[e.Skill]++
-	}
+	proof := ProofCounts(ev)
 	goal := map[string]store.SkillGoal{}
 	for _, g := range goals {
 		goal[g.Skill] = g
