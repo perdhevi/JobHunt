@@ -1,4 +1,4 @@
-import { Application, Doc, STAGES, today } from "./api";
+import { Application, Doc, skipLabel, STAGES, today } from "./api";
 
 export type Format = "md" | "csv" | "json";
 
@@ -38,12 +38,13 @@ function rows(apps: Application[], docs: Doc[], o: ExportOptions) {
       stage: stageName(a.stage),
       outcome: a.outcome,
       applied: a.applied,
+      skip_reason: a.stage === "skipped" ? skipLabel(a.skipReason) : "",
       cover_letter: docName(docs, a.letterId),
       cover_file: a.coverFile?.name || docFile(docs, a.letterId),
       resume: docName(docs, a.resumeId),
       resume_file: a.resumeFile?.name || docFile(docs, a.resumeId),
     };
-    if (!o.safe) Object.assign(r, { comp: a.comp, contact: a.contact, next_step: a.nextStep, next_date: a.nextDate, url: a.url, notes: a.notes, letter_as_sent: a.letterText });
+    if (!o.safe) Object.assign(r, { skip_note: a.skipNote, comp: a.comp, contact: a.contact, next_step: a.nextStep, next_date: a.nextDate, url: a.url, notes: a.notes, letter_as_sent: a.letterText });
     return r;
   });
   return { list, out };
@@ -51,6 +52,7 @@ function rows(apps: Application[], docs: Doc[], o: ExportOptions) {
 
 const HEAD: Record<string, string> = {
   ref: "Ref", company: "Company", role: "Role", track: "Track", source: "Source", stage: "Stage", outcome: "Outcome", applied: "Applied",
+  skip_reason: "Skip reason", skip_note: "Skip details",
   cover_letter: "Cover letter", cover_file: "Cover letter file", resume: "Resume", resume_file: "Resume file", comp: "Salary / rate",
   contact: "Contact", next_step: "Next step", next_date: "Due", url: "Link", notes: "Notes", letter_as_sent: "Letter as sent",
 };
@@ -86,7 +88,7 @@ function toMarkdown(apps: Application[], docs: Doc[], o: ExportOptions) {
 
 function toCSV(apps: Application[], docs: Doc[], o: ExportOptions) {
   const { out } = rows(apps, docs, o);
-  if (!out.length) return "ref,company,role,track,source,stage,outcome,applied,cover_letter,cover_file,resume,resume_file\n";
+  if (!out.length) return "ref,company,role,track,source,stage,outcome,applied,skip_reason,cover_letter,cover_file,resume,resume_file\n";
   const cols = Object.keys(out[0]);
   // A cell starting with = + - @ or a tab is a formula to Excel and Sheets, and
   // company names and notes come from job posts an agent read. The quote makes
@@ -108,7 +110,7 @@ function toJSON(apps: Application[], docs: Doc[], o: ExportOptions) {
     delete c.replied;
     delete c.sent;
     delete c.version;
-    if (o.safe) for (const k of ["comp", "contact", "nextStep", "nextDate", "url", "notes", "letterText"] as const) delete c[k];
+    if (o.safe) for (const k of ["comp", "contact", "nextStep", "nextDate", "url", "notes", "letterText", "skipNote"] as const) delete c[k];
     if (o.anon) c.company = out[i].company;
     return c;
   };

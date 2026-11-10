@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>WWR</title>
+<item><media:content url="https://x/logo.png" type="image/png"/>
+<title>Proxify AB: Senior Backend Developer (Python)</title><region>Anywhere in the World</region>
+<country>🇦🇩 Andorra, 🇮🇩 Indonesia</country><skills>Python, PostgreSQL, and Django</skills>
+<category>Back-End Programming</category><type>Full-Time</type>
+<description>&lt;p&gt;Python services, Django, PostgreSQL, Docker, AWS.&lt;/p&gt;</description>
+<pubDate>Wed, 14 Oct 2026 10:51:23 +0000</pubDate><expires_at>Fri, 13 Nov 2026 10:51:23 +0000</expires_at>
+<guid>https://weworkremotely.com/remote-jobs/proxify-ab-senior-backend-developer-python</guid>
+<link>https://weworkremotely.com/remote-jobs/proxify-ab-senior-backend-developer-python</link></item>
+<item><title>Twikey: Senior Java Developer</title><region>Europe Only</region><country>🇧🇪 Belgium</country>
+<skills>Java, PostgreSQL, and Spring</skills><category>Back-End Programming</category><type>Full-Time</type>
+<description>&lt;p&gt;Java and Spring.&lt;/p&gt;</description><pubDate>Tue, 13 Oct 2026 10:51:23 +0000</pubDate>
+<guid>https://weworkremotely.com/remote-jobs/twikey-senior-java-developer</guid>
+<link>https://weworkremotely.com/remote-jobs/twikey-senior-java-developer</link></item>
+</channel></rss>

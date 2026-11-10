@@ -14,8 +14,61 @@ import (
 // NudgeDays is how long an application can sit in Applied before it is flagged.
 const NudgeDays = 7
 
-// Stages lists the pipeline columns in board order.
-var Stages = []string{"saved", "applied", "screening", "interview", "offer", "closed"}
+// Stages lists the pipeline columns in board order. "skipped" is a decision not
+// to apply, kept so the same job isn't picked up again.
+var Stages = []string{"saved", "applied", "screening", "interview", "offer", "closed", "skipped"}
+
+// SkipReason is why a job was skipped. "other" needs details.
+type SkipReason struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// SkipReasons are the categories Job Radar used, so its records import as they are.
+var SkipReasons = []SkipReason{
+	{"rate", "Rate too low"},
+	{"location", "Location not applicable"},
+	{"timezone", "Time zone doesn't fit"},
+	{"seniority", "Seniority mismatch"},
+	{"language", "Language required"},
+	{"not_interested", "Not interested"},
+	{"other", "Other"},
+}
+
+// SkipLabel returns the label for a reason key, or the key itself.
+func SkipLabel(key string) string {
+	for _, r := range SkipReasons {
+		if r.Key == key {
+			return r.Label
+		}
+	}
+	return key
+}
+
+// SkipWhy is the reason label followed by the details, for messages.
+func SkipWhy(reason, note string) string {
+	if note == "" {
+		return SkipLabel(reason)
+	}
+	return SkipLabel(reason) + ": " + note
+}
+
+func validSkipReason(key string) bool {
+	for _, r := range SkipReasons {
+		if r.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func skipKeys() string {
+	keys := make([]string, len(SkipReasons))
+	for i, r := range SkipReasons {
+		keys[i] = r.Key
+	}
+	return strings.Join(keys, ", ")
+}
 
 // Application is one tracked job. JSON names match the original tracker's
 // backup format so its exports import unchanged.
@@ -40,6 +93,10 @@ type Application struct {
 	ResumeID   string `json:"resumeId"`
 	CoverFile  *File  `json:"coverFile"`
 	ResumeFile *File  `json:"resumeFile"`
+	// Set only in the skipped stage: a SkipReasons key, the details, and the day.
+	SkipReason string `json:"skipReason"`
+	SkipNote   string `json:"skipNote"`
+	Skipped    string `json:"skipped"`
 	Version    int64  `json:"version"`
 	CreatedAt  int64  `json:"createdAt"`
 	UpdatedAt  int64  `json:"updatedAt"`
@@ -71,14 +128,14 @@ func fmtDay(d string) string {
 
 // derive fills the computed fields.
 func (a *Application) derive() {
-	a.Sent = a.Stage != "saved" && !(a.Stage == "closed" && a.Applied == "")
+	a.Sent = a.Stage != "saved" && !((a.Stage == "closed" || a.Stage == "skipped") && a.Applied == "")
 	a.Replied = a.Stage == "screening" || a.Stage == "interview" || a.Stage == "offer" ||
 		(a.Stage == "closed" && a.Outcome != "" && a.Outcome != "No response" && a.Outcome != "Role closed")
 	a.Due = dueReason(a)
 }
 
 func dueReason(a *Application) string {
-	if a.Stage == "closed" {
+	if a.Stage == "closed" || a.Stage == "skipped" {
 		return ""
 	}
 	step := a.NextStep
@@ -130,7 +187,7 @@ func (a *Application) clean() error {
 	if !valid {
 		return fmt.Errorf("%w: stage must be one of %s", ErrInvalid, strings.Join(Stages, ", "))
 	}
-	for name, d := range map[string]string{"applied": a.Applied, "nextDate": a.NextDate} {
+	for name, d := range map[string]string{"applied": a.Applied, "nextDate": a.NextDate, "skipped": a.Skipped} {
 		if d != "" {
 			if _, err := time.Parse("2006-01-02", d); err != nil {
 				return fmt.Errorf("%w: %s must be YYYY-MM-DD", ErrInvalid, name)
@@ -140,8 +197,25 @@ func (a *Application) clean() error {
 	if a.Stage != "closed" {
 		a.Outcome = ""
 	}
+	if a.Stage == "skipped" {
+		a.SkipNote = strings.TrimSpace(a.SkipNote)
+		if a.SkipReason == "" {
+			a.SkipReason = "other"
+		}
+		if !validSkipReason(a.SkipReason) {
+			return fmt.Errorf("%w: skip reason must be one of %s", ErrInvalid, skipKeys())
+		}
+		if a.SkipReason == "other" && a.SkipNote == "" {
+			return fmt.Errorf("%w: say why in the skip details when the reason is other", ErrInvalid)
+		}
+		if a.Skipped == "" {
+			a.Skipped = today()
+		}
+	} else {
+		a.SkipReason, a.SkipNote, a.Skipped = "", "", ""
+	}
 	// Reaching an active stage means it went out, so the date can't stay blank.
-	if a.Applied == "" && a.Stage != "saved" && a.Stage != "closed" {
+	if a.Applied == "" && a.Stage != "saved" && a.Stage != "closed" && a.Stage != "skipped" {
 		a.Applied = today()
 	}
 	return nil
@@ -174,7 +248,7 @@ func cleanLink(raw string) (string, error) {
 
 const appColumns = `a.id, a.ref, a.company, a.role, a.track, a.source, a.stage, a.outcome, a.applied, a.comp,
 	a.next_step, a.next_date, a.contact, a.url, a.notes, a.letter_id, a.letter_text, a.resume_id,
-	a.version, a.created_at, a.updated_at,
+	a.skip_reason, a.skip_note, a.skipped, a.version, a.created_at, a.updated_at,
 	cf.id, cf.name, cf.size, cf.type, rf.id, rf.name, rf.size, rf.type
 	FROM applications a
 	LEFT JOIN files cf ON cf.id = a.cover_file_id
@@ -188,7 +262,7 @@ func scanApp(r scanner) (Application, error) {
 	var cSize, rSize sql.NullInt64
 	err := r.Scan(&a.ID, &a.Ref, &a.Company, &a.Role, &a.Track, &a.Source, &a.Stage, &a.Outcome, &a.Applied, &a.Comp,
 		&a.NextStep, &a.NextDate, &a.Contact, &a.URL, &a.Notes, &a.LetterID, &a.LetterText, &a.ResumeID,
-		&a.Version, &a.CreatedAt, &a.UpdatedAt,
+		&a.SkipReason, &a.SkipNote, &a.Skipped, &a.Version, &a.CreatedAt, &a.UpdatedAt,
 		&cID, &cName, &cSize, &cType, &rID, &rName, &rSize, &rType)
 	if err != nil {
 		return a, err
@@ -248,6 +322,7 @@ const (
 	VerdictPossibleDuplicate Verdict = "possible_duplicate" // similar role, needs a human or agent judgement
 	VerdictAlreadyTracked    Verdict = "already_tracked"    // same job on record, not yet sent
 	VerdictAlreadySent       Verdict = "already_sent"       // same job, application already went out
+	VerdictSkipped           Verdict = "skipped"            // same job, deliberately skipped
 )
 
 // Match is one existing record that resembles the candidate.
@@ -262,6 +337,10 @@ type Match struct {
 	URL       string `json:"url,omitempty"`
 	Sent      bool   `json:"sent"`
 	MatchedOn string `json:"matchedOn"` // "url", "company+role" or "similar_role"
+	// Set when the match is in the skipped stage.
+	SkipReason string `json:"skipReason,omitempty"`
+	SkipNote   string `json:"skipNote,omitempty"`
+	Skipped    string `json:"skipped,omitempty"`
 }
 
 // CheckResult reports what is already known about a candidate application.
@@ -291,7 +370,8 @@ func check(apps []Application, company, role, rawURL, excludeID string) CheckRes
 			continue
 		}
 		m := Match{ID: a.ID, Ref: a.Ref, Company: a.Company, Role: a.Role, Stage: a.Stage,
-			Outcome: a.Outcome, Applied: a.Applied, URL: a.URL, Sent: a.Sent}
+			Outcome: a.Outcome, Applied: a.Applied, URL: a.URL, Sent: a.Sent,
+			SkipReason: a.SkipReason, SkipNote: a.SkipNote, Skipped: a.Skipped}
 		theirCo := CompanyKey(a.Company)
 		switch {
 		case urlKey != "" && URLKey(a.URL) == urlKey:
@@ -314,8 +394,12 @@ func check(apps []Application, company, role, rawURL, excludeID string) CheckRes
 	sort.SliceStable(res.Matches, func(i, j int) bool { return res.Matches[i].Sent && !res.Matches[j].Sent })
 
 	anySent := false
-	for _, m := range res.Matches {
+	var skipped *Match
+	for i, m := range res.Matches {
 		anySent = anySent || (m.Sent && m.MatchedOn != "similar_role")
+		if skipped == nil && m.Stage == "skipped" && m.MatchedOn != "similar_role" {
+			skipped = &res.Matches[i]
+		}
 	}
 	switch {
 	case anySent:
@@ -323,6 +407,10 @@ func check(apps []Application, company, role, rawURL, excludeID string) CheckRes
 		m := res.Matches[0]
 		res.Message = fmt.Sprintf("Already sent: %s, %s (stage %s, applied %s, ref %s). Do not send again.",
 			m.Company, m.Role, m.Stage, orDash(m.Applied), m.Ref)
+	case skipped != nil:
+		res.Verdict, res.SafeToSend = VerdictSkipped, false
+		res.Message = fmt.Sprintf("Skipped on %s (%s). Do not apply. To apply after all, the user first moves %s, %s (ref %s) out of Skipped on the board.",
+			orDash(skipped.Skipped), SkipWhy(skipped.SkipReason, skipped.SkipNote), skipped.Company, skipped.Role, skipped.Ref)
 	case exact:
 		res.Verdict, res.SafeToSend = VerdictAlreadyTracked, true
 		res.Message = "Already on the board but not sent yet. Use the existing record, do not add a new one."
@@ -392,7 +480,7 @@ func (s *Store) Create(ctx context.Context, a Application, mode CreateMode) (Cre
 		res.Check = check(apps, a.Company, a.Role, a.URL, "")
 		blocked := false
 		switch res.Check.Verdict {
-		case VerdictAlreadySent, VerdictAlreadyTracked:
+		case VerdictAlreadySent, VerdictAlreadyTracked, VerdictSkipped:
 			blocked = mode != CreateForce
 		case VerdictPossibleDuplicate:
 			blocked = mode == CreateStrict
@@ -440,10 +528,12 @@ func fileIDArg(f *File) any {
 func insertApp(ctx context.Context, tx *sql.Tx, a *Application, allowDup int) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO applications
 		(id, ref, company, role, track, source, stage, outcome, applied, comp, next_step, next_date, contact, url, notes,
-		 letter_id, letter_text, resume_id, cover_file_id, resume_file_id, url_key, identity_key, allow_dup, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 letter_id, letter_text, resume_id, cover_file_id, resume_file_id, skip_reason, skip_note, skipped,
+		 url_key, identity_key, allow_dup, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ID, a.Ref, a.Company, a.Role, a.Track, a.Source, a.Stage, a.Outcome, a.Applied, a.Comp, a.NextStep, a.NextDate,
 		a.Contact, a.URL, a.Notes, a.LetterID, a.LetterText, a.ResumeID, fileIDArg(a.CoverFile), fileIDArg(a.ResumeFile),
+		a.SkipReason, a.SkipNote, a.Skipped,
 		URLKey(a.URL), IdentityKey(a.Company, a.Role), allowDup, a.CreatedAt, a.UpdatedAt)
 	return err
 }
@@ -478,11 +568,12 @@ func (s *Store) Update(ctx context.Context, a Application, force bool) (Applicat
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE applications SET
 			company=?, role=?, track=?, source=?, stage=?, outcome=?, applied=?, comp=?, next_step=?, next_date=?, contact=?,
-			url=?, notes=?, letter_id=?, letter_text=?, resume_id=?, cover_file_id=?, resume_file_id=?, url_key=?, identity_key=?,
+			url=?, notes=?, letter_id=?, letter_text=?, resume_id=?, cover_file_id=?, resume_file_id=?,
+			skip_reason=?, skip_note=?, skipped=?, url_key=?, identity_key=?,
 			allow_dup=`+allowDup+`, version=version+1, updated_at=? WHERE id=?`,
 			a.Company, a.Role, a.Track, a.Source, a.Stage, a.Outcome, a.Applied, a.Comp, a.NextStep, a.NextDate, a.Contact,
 			a.URL, a.Notes, a.LetterID, a.LetterText, a.ResumeID, fileIDArg(a.CoverFile), fileIDArg(a.ResumeFile),
-			URLKey(a.URL), IdentityKey(a.Company, a.Role), time.Now().UnixMilli(), a.ID)
+			a.SkipReason, a.SkipNote, a.Skipped, URLKey(a.URL), IdentityKey(a.Company, a.Role), time.Now().UnixMilli(), a.ID)
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: another record already has this link or company and role", ErrConflict)
 		}
@@ -593,7 +684,7 @@ func Summarize(apps []Application) Summary {
 		s.ByStage[a.Stage]++
 		if a.Sent {
 			s.Sent++
-			if a.Stage != "closed" {
+			if a.Stage != "closed" && a.Stage != "skipped" {
 				s.InFlight++
 			}
 			if a.Replied {

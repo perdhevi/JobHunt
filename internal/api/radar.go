@@ -1,0 +1,193 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
+	"jobhunt/internal/radar"
+	"jobhunt/internal/store"
+)
+
+type radarStateDTO struct {
+	radar.Status
+	Leads []store.Lead `json:"leads"`
+}
+
+// radarState is everything the Radar view lists: run status and stored leads,
+// each with the board record it's on, if any.
+func (s *Server) radarState(w http.ResponseWriter, r *http.Request) {
+	st, err := s.Radar.Status(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	leads, err := s.Store.ListLeads(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, radarStateDTO{Status: st, Leads: leads})
+}
+
+// radarRun starts a scan in the background; the page polls radarState.
+func (s *Server) radarRun(w http.ResponseWriter, r *http.Request) {
+	var in struct{}
+	if !readJSON(w, r, &in) { // like every write: a cross-site form can't send JSON
+		return
+	}
+	if s.Radar.Running() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": radar.ErrRunning.Error()})
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		if _, err := s.Radar.Run(ctx, radar.Options{}); err != nil && !errors.Is(err, radar.ErrRunning) {
+			log.Printf("radar: %v", err)
+		}
+	}()
+	// Give the run a moment to claim the lock, so the reply already says running.
+	for i := 0; i < 20 && !s.Radar.Running(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.radarState(w, r)
+}
+
+// radarAct saves a lead to the board, marks it applied, or skips it. 409 with
+// the check result means the job was already on the board; the lead is then
+// linked to that record.
+func (s *Server) radarAct(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		UID        string `json:"uid"`
+		Stage      string `json:"stage"`
+		SkipReason string `json:"skipReason"`
+		SkipNote   string `json:"skipNote"`
+		Force      bool   `json:"force"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	// Acting on a lead is a deliberate choice, so another role at the same
+	// company doesn't block it; only the same job does, unless forced.
+	mode := store.CreateAllowSimilar
+	if in.Force {
+		mode = store.CreateForce
+	}
+	res, err := s.Store.ActOnLead(r.Context(), in.UID, store.LeadAction{Stage: in.Stage, SkipReason: in.SkipReason, SkipNote: in.SkipNote}, mode)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !res.Created {
+		writeJSON(w, http.StatusConflict, res)
+		return
+	}
+	writeJSON(w, http.StatusCreated, res)
+}
+
+func (s *Server) radarSkills(w http.ResponseWriter, r *http.Request) {
+	m, _, err := s.Radar.Skills(r.Context())
+	if err != nil {
+		writeErr(w, fmt.Errorf("%w: %v", store.ErrInvalid, err))
+		return
+	}
+	now := time.Now()
+	obs, err := s.Store.SkillObservations(r.Context(), now.AddDate(-1, 0, 0).Format("2006-01-02"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m.Report(obs, now))
+}
+
+type radarSettingsDTO struct {
+	Config         string `json:"config"`
+	Skills         string `json:"skills"`
+	DefaultConfig  string `json:"defaultConfig"`
+	DefaultSkills  string `json:"defaultSkills"`
+	ConfigError    string `json:"configError,omitempty"`
+	SkillsError    string `json:"skillsError,omitempty"`
+	ConfigIsCustom bool   `json:"configIsCustom"`
+	SkillsIsCustom bool   `json:"skillsIsCustom"`
+}
+
+func (s *Server) radarSettings(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	out := radarSettingsDTO{DefaultConfig: radar.DefaultConfig, DefaultSkills: radar.DefaultSkills}
+	var err error
+	if out.Config, err = s.Store.GetSetting(ctx, radar.SettingConfig); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if out.Skills, err = s.Store.GetSetting(ctx, radar.SettingSkills); err != nil {
+		writeErr(w, err)
+		return
+	}
+	out.ConfigIsCustom, out.SkillsIsCustom = out.Config != "", out.Skills != ""
+	if !out.ConfigIsCustom {
+		out.Config = radar.DefaultConfig
+	}
+	if !out.SkillsIsCustom {
+		out.Skills = radar.DefaultSkills
+	}
+	if _, _, err := radar.ParseConfig(out.Config); err != nil {
+		out.ConfigError = err.Error()
+	}
+	if _, err := radar.ParseSkills(out.Skills); err != nil {
+		out.SkillsError = err.Error()
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// putRadarSettings saves config.json or skills.json text after checking it
+// parses and every pattern compiles. An empty string goes back to the default.
+func (s *Server) putRadarSettings(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Config *string `json:"config"`
+		Skills *string `json:"skills"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	ctx := r.Context()
+	if in.Config != nil && strings.TrimSpace(*in.Config) != "" {
+		if _, _, err := radar.ParseConfig(*in.Config); err != nil {
+			writeErr(w, fmt.Errorf("%w: %v", store.ErrInvalid, err))
+			return
+		}
+	}
+	if in.Skills != nil && strings.TrimSpace(*in.Skills) != "" {
+		if _, err := radar.ParseSkills(*in.Skills); err != nil {
+			writeErr(w, fmt.Errorf("%w: %v", store.ErrInvalid, err))
+			return
+		}
+	}
+	for key, v := range map[string]*string{radar.SettingConfig: in.Config, radar.SettingSkills: in.Skills} {
+		if v == nil {
+			continue
+		}
+		if err := s.Store.SetSetting(ctx, key, strings.TrimSpace(*v)); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	s.radarSettings(w, r)
+}
+
+func (s *Server) radarAddCompany(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Ref, Name string }
+	if !readJSON(w, r, &in) {
+		return
+	}
+	res, err := s.Radar.AddCompany(r.Context(), in.Ref, in.Name)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, res)
+}

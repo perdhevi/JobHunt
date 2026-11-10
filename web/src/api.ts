@@ -5,7 +5,21 @@ export const STAGES = [
   { id: "interview", name: "Interviewing" },
   { id: "offer", name: "Offer" },
   { id: "closed", name: "Closed" },
+  { id: "skipped", name: "Skipped" },
 ] as const;
+
+// Why a job was skipped. Mirrors store.SkipReasons; "other" needs details.
+export const SKIP_REASONS = [
+  { key: "rate", label: "Rate too low" },
+  { key: "location", label: "Location not applicable" },
+  { key: "timezone", label: "Time zone doesn't fit" },
+  { key: "seniority", label: "Seniority mismatch" },
+  { key: "language", label: "Language required" },
+  { key: "not_interested", label: "Not interested" },
+  { key: "other", label: "Other" },
+] as const;
+
+export const skipLabel = (key: string) => SKIP_REASONS.find((r) => r.key === key)?.label ?? key;
 
 export const SOURCES = ["LinkedIn", "Upwork", "We Work Remotely", "Company site", "Referral", "Recruiter inbound", "X / Twitter", "Other"];
 export const OUTCOMES = ["Rejected", "No response", "Role closed", "Withdrew", "Declined offer", "Accepted"];
@@ -38,6 +52,9 @@ export interface Application {
   resumeId: string;
   coverFile: FileMeta | null;
   resumeFile: FileMeta | null;
+  skipReason: string;
+  skipNote: string;
+  skipped: string;
   version: number;
   createdAt: number;
   updatedAt: number;
@@ -67,10 +84,13 @@ export interface Match {
   applied?: string;
   sent: boolean;
   matchedOn: string;
+  skipReason?: string;
+  skipNote?: string;
+  skipped?: string;
 }
 
 export interface CheckResult {
-  verdict: "new" | "possible_duplicate" | "already_tracked" | "already_sent";
+  verdict: "new" | "possible_duplicate" | "already_tracked" | "already_sent" | "skipped";
   safeToSend: boolean;
   message: string;
   matches: Match[];
@@ -90,6 +110,112 @@ export interface Settings {
   configPath: string;
   docker: boolean;
   dbPathFixed: boolean; // JOBHUNT_DB picks the database, as on a VPS
+}
+
+export interface Skip {
+  reason: string;
+  note: string;
+}
+
+export interface LeadApp {
+  id: string;
+  ref: string;
+  stage: string;
+  applied?: string;
+  skipReason?: string;
+  skipNote?: string;
+  skipped?: string;
+}
+
+export interface Lead {
+  uid: string;
+  source: string;
+  sourceName: string;
+  title: string;
+  company: string;
+  url: string;
+  originalUrl: string;
+  location: string;
+  salary: string;
+  posted: string;
+  score: number;
+  hits: string[];
+  flags: string[];
+  alsoOn: string[];
+  altUids: string[];
+  snippet: string;
+  antispam: string;
+  firstSeen: string;
+  application?: LeadApp;
+}
+
+export interface SourceResult {
+  name: string;
+  home: string;
+  count: number;
+  error?: string;
+  skipped?: string;
+}
+
+export interface RadarSummary {
+  date: string;
+  started: string;
+  finished: string;
+  ok: boolean;
+  sources: SourceResult[];
+  problems: SourceResult[];
+  scanned: number;
+  matches: number;
+  hidden: number;
+  error?: string;
+}
+
+export interface RadarState {
+  running: boolean;
+  autoRun: boolean;
+  last: RadarSummary | null;
+  configError?: string;
+  leads: Lead[];
+}
+
+export interface SkillRow {
+  skill: string;
+  area: string;
+  status: "have" | "learning" | "gap";
+  count: number;
+  share: number;
+}
+
+export interface SkillReport {
+  date: string;
+  windowDays: number;
+  listings: number;
+  minJobs: number;
+  enough: boolean;
+  asked: number;
+  coverage: number;
+  gaps: SkillRow[];
+  skills: SkillRow[];
+  areas: { area: string; share: number; have: number; seen: number }[];
+}
+
+export interface RadarSettings {
+  config: string;
+  skills: string;
+  defaultConfig: string;
+  defaultSkills: string;
+  configError?: string;
+  skillsError?: string;
+  configIsCustom: boolean;
+  skillsIsCustom: boolean;
+}
+
+export interface CompanyResult {
+  ats: string;
+  token: string;
+  name: string;
+  jobs: number;
+  remote: number;
 }
 
 export class ApiError extends Error {
@@ -130,8 +256,16 @@ export const api = {
     request<CreateResult>("POST", `/api/applications${force ? "?force=1" : ""}`, a),
   updateApp: (a: Partial<Application> & { id: string }, force = false) =>
     request<Application>("PUT", `/api/applications/${a.id}${force ? "?force=1" : ""}`, a),
-  moveApp: (id: string, stage: string, outcome = "") =>
-    request<Application>("PATCH", `/api/applications/${id}/stage`, { stage, outcome }),
+  moveApp: (id: string, stage: string, outcome = "", skip?: Skip) =>
+    request<Application>("PATCH", `/api/applications/${id}/stage`, { stage, outcome, skipReason: skip?.reason ?? "", skipNote: skip?.note ?? "" }),
+  radar: () => request<RadarState>("GET", "/api/radar"),
+  radarRun: () => request<RadarState>("POST", "/api/radar/run", {}),
+  radarAct: (uid: string, stage: "saved" | "applied" | "skipped", skip?: Skip, force = false) =>
+    request<CreateResult>("POST", "/api/radar/act", { uid, stage, skipReason: skip?.reason ?? "", skipNote: skip?.note ?? "", force }),
+  radarSkills: () => request<SkillReport>("GET", "/api/radar/skills"),
+  radarSettings: () => request<RadarSettings>("GET", "/api/radar/settings"),
+  saveRadarSettings: (s: { config?: string; skills?: string }) => request<RadarSettings>("PUT", "/api/radar/settings", s),
+  radarAddCompany: (ref: string, name: string) => request<CompanyResult>("POST", "/api/radar/companies", { ref, name }),
   deleteApp: (id: string) => request<void>("DELETE", `/api/applications/${id}`),
   listDocs: () => request<Doc[]>("GET", "/api/documents"),
   saveDoc: (d: Partial<Doc>) => request<Doc>(d.id ? "PUT" : "POST", d.id ? `/api/documents/${d.id}` : "/api/documents", d),

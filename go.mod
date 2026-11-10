@@ -3,6 +3,7 @@ module jobhunt
 go 1.27.3
 
 require (
+	github.com/dlclark/regexp2 v1.12.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	modernc.org/sqlite v1.61.1
 )

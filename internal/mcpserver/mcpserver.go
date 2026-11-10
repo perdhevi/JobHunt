@@ -17,8 +17,10 @@ import (
 
 const instructions = `Tracks the user's job applications.
 ALWAYS call check_application before preparing or sending an application, and do not send when safeToSend is false.
+A "skipped" verdict means the user decided not to apply; it gives the reason. Don't apply unless the user moves it out of Skipped.
 After the application actually goes out, call mark_sent. Never call mark_sent for something that was only drafted.
-add_application refuses duplicates, so retrying it is safe.`
+add_application refuses duplicates, so retrying it is safe.
+Job Radar finds leads on job boards every day: list_leads shows them, save_lead puts one on the board, skip_lead records why not.`
 
 // New builds a server with all tools registered.
 func New(s *store.Store, version string) *mcp.Server {
@@ -33,7 +35,7 @@ func New(s *store.Store, version string) *mcp.Server {
 	overwrite := &mcp.ToolAnnotations{DestructiveHint: &destructive}
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "check_application", Annotations: ro,
-		Description: "Check whether a job is already tracked or was already sent. Call this before preparing or sending anything. Pass the job link when you have one: it is the strongest match. Returns verdict (new, possible_duplicate, already_tracked, already_sent), safeToSend, and the matching records."},
+		Description: "Check whether a job is already tracked, was already sent, or was skipped. Call this before preparing or sending anything. Pass the job link when you have one: it is the strongest match. Returns verdict (new, possible_duplicate, already_tracked, already_sent, skipped), safeToSend, and the matching records; a skipped match carries skipReason and skipNote."},
 		h.check)
 	mcp.AddTool(srv, &mcp.Tool{Name: "add_application", Annotations: write,
 		Description: "Add a job to the board, in the saved stage unless another is given. Runs the duplicate check itself: if the job exists, nothing is written and created=false with the existing record in check.matches. A possible_duplicate is also refused unless confirm_distinct=true. An exact duplicate cannot be forced here; only the user can do that in the web UI."},
@@ -44,6 +46,18 @@ func New(s *store.Store, version string) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{Name: "update_application", Annotations: overwrite,
 		Description: "Change fields on an application, for example stage, next step, or outcome. Only the fields you pass change. append_notes adds to the notes instead of replacing them. Setting an outcome closes the record."},
 		h.update)
+	mcp.AddTool(srv, &mcp.Tool{Name: "skip_application", Annotations: write,
+		Description: "Move an application to Skipped, with the reason and details, when the user decides not to apply. Reasons: " + reasonList() + ". other needs details. A skipped job stays on record so it isn't picked up again."},
+		h.skip)
+	mcp.AddTool(srv, &mcp.Tool{Name: "list_leads", Annotations: ro,
+		Description: "List Job Radar's leads: scored listings from job boards and target companies' career pages, best score first. By default only leads not yet on the board; each has an id to pass to save_lead or skip_lead, its board link, warnings (flags) such as location or time-zone limits, and what it matched."},
+		h.leads)
+	mcp.AddTool(srv, &mcp.Tool{Name: "save_lead", Annotations: write,
+		Description: "Put a Job Radar lead on the board in the saved stage, with its details in the notes. Runs the duplicate check: if the job is already on the board, nothing is written and created=false. Call mark_sent later, once the application actually goes out."},
+		h.saveLead)
+	mcp.AddTool(srv, &mcp.Tool{Name: "skip_lead", Annotations: write,
+		Description: "Skip a Job Radar lead with the reason and details. It goes on the board as skipped, so the job and its reposts stay out of the leads. Reasons: " + reasonList() + ". other needs details."},
+		h.skipLead)
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_application", Annotations: ro,
 		Description: "Fetch one application by id or reference code."},
 		h.get)
@@ -97,7 +111,9 @@ type addIn struct {
 	URL             string `json:"url,omitempty" jsonschema:"job post link"`
 	Track           string `json:"track,omitempty" jsonschema:"fulltime (default) or contract"`
 	Source          string `json:"source,omitempty" jsonschema:"where it was found, such as LinkedIn or Upwork"`
-	Stage           string `json:"stage,omitempty" jsonschema:"saved (default), applied, screening, interview, offer or closed"`
+	Stage           string `json:"stage,omitempty" jsonschema:"saved (default), applied, screening, interview, offer, closed or skipped"`
+	SkipReason      string `json:"skip_reason,omitempty" jsonschema:"with stage skipped: rate, location, timezone, seniority, language, not_interested or other"`
+	SkipNote        string `json:"skip_note,omitempty" jsonschema:"with stage skipped: why, in the user's words; required for other"`
 	Comp            string `json:"comp,omitempty" jsonschema:"salary or rate"`
 	Contact         string `json:"contact,omitempty" jsonschema:"contact name and title"`
 	NextStep        string `json:"next_step,omitempty" jsonschema:"next action"`
@@ -115,7 +131,7 @@ func (h *handlers) add(ctx context.Context, _ *mcp.CallToolRequest, in addIn) (*
 	}
 	r, err := h.s.Create(ctx, store.Application{Company: in.Company, Role: in.Role, URL: in.URL, Track: in.Track,
 		Source: in.Source, Stage: in.Stage, Comp: in.Comp, Contact: in.Contact, NextStep: in.NextStep, NextDate: in.NextDate,
-		Notes: in.Notes, LetterID: in.LetterID, ResumeID: in.ResumeID}, mode)
+		Notes: in.Notes, LetterID: in.LetterID, ResumeID: in.ResumeID, SkipReason: in.SkipReason, SkipNote: in.SkipNote}, mode)
 	return nil, r, err
 }
 
@@ -146,7 +162,9 @@ func (h *handlers) markSent(ctx context.Context, _ *mcp.CallToolRequest, in mark
 
 type updateIn struct {
 	IDOrRef     string  `json:"id_or_ref" jsonschema:"application id or reference code"`
-	Stage       *string `json:"stage,omitempty" jsonschema:"saved, applied, screening, interview, offer or closed"`
+	Stage       *string `json:"stage,omitempty" jsonschema:"saved, applied, screening, interview, offer, closed or skipped (prefer skip_application)"`
+	SkipReason  *string `json:"skip_reason,omitempty" jsonschema:"with stage skipped: the reason key"`
+	SkipNote    *string `json:"skip_note,omitempty" jsonschema:"with stage skipped: why"`
 	Outcome     *string `json:"outcome,omitempty" jsonschema:"closing reason, such as Rejected, No response, Withdrew, Declined offer, Accepted"`
 	NextStep    *string `json:"next_step,omitempty" jsonschema:"next action"`
 	NextDate    *string `json:"next_date,omitempty" jsonschema:"next action due date, YYYY-MM-DD, or empty to clear"`
@@ -163,7 +181,8 @@ func (h *handlers) update(ctx context.Context, _ *mcp.CallToolRequest, in update
 			dst *string
 			src *string
 		}{{&a.Stage, in.Stage}, {&a.Outcome, in.Outcome}, {&a.NextStep, in.NextStep}, {&a.NextDate, in.NextDate},
-			{&a.Comp, in.Comp}, {&a.Contact, in.Contact}, {&a.URL, in.URL}, {&a.Notes, in.Notes}} {
+			{&a.Comp, in.Comp}, {&a.Contact, in.Contact}, {&a.URL, in.URL}, {&a.Notes, in.Notes},
+			{&a.SkipReason, in.SkipReason}, {&a.SkipNote, in.SkipNote}} {
 			if f.src != nil {
 				*f.dst = *f.src
 			}
@@ -272,4 +291,90 @@ type documentsOut struct {
 func (h *handlers) documents(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, documentsOut, error) {
 	d, err := h.s.ListDocuments(ctx)
 	return nil, documentsOut{Documents: d}, err
+}
+
+func reasonList() string {
+	keys := make([]string, len(store.SkipReasons))
+	for i, r := range store.SkipReasons {
+		keys[i] = r.Key + " (" + r.Label + ")"
+	}
+	return strings.Join(keys, ", ")
+}
+
+type skipIn struct {
+	IDOrRef string `json:"id_or_ref" jsonschema:"application id or reference code"`
+	Reason  string `json:"reason" jsonschema:"rate, location, timezone, seniority, language, not_interested or other"`
+	Details string `json:"details,omitempty" jsonschema:"why, in the user's words; required when reason is other"`
+}
+
+func (h *handlers) skip(ctx context.Context, _ *mcp.CallToolRequest, in skipIn) (*mcp.CallToolResult, store.Application, error) {
+	a, err := h.s.Patch(ctx, in.IDOrRef, func(a *store.Application) error {
+		a.Stage, a.SkipReason, a.SkipNote, a.Skipped = "skipped", in.Reason, in.Details, ""
+		return nil
+	})
+	return nil, a, err
+}
+
+type leadsIn struct {
+	Query          string `json:"query,omitempty" jsonschema:"text to find in title, company, location or matched skills"`
+	MinScore       int    `json:"min_score,omitempty" jsonschema:"only leads scoring at least this"`
+	IncludeTracked bool   `json:"include_tracked,omitempty" jsonschema:"also list leads already on the board, with their stage"`
+	Limit          int    `json:"limit,omitempty" jsonschema:"maximum results, default 30"`
+}
+
+type leadsOut struct {
+	Total int          `json:"total"`
+	Leads []store.Lead `json:"leads"`
+}
+
+func (h *handlers) leads(ctx context.Context, _ *mcp.CallToolRequest, in leadsIn) (*mcp.CallToolResult, leadsOut, error) {
+	all, err := h.s.ListLeads(ctx)
+	if err != nil {
+		return nil, leadsOut{}, err
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 30
+	}
+	q := strings.ToLower(strings.TrimSpace(in.Query))
+	out := leadsOut{Leads: []store.Lead{}}
+	for _, l := range all {
+		if (l.Application != nil && !in.IncludeTracked) || l.Score < in.MinScore {
+			continue
+		}
+		if q != "" && !strings.Contains(strings.ToLower(strings.Join(append([]string{l.Title, l.Company, l.Location}, l.Hits...), " ")), q) {
+			continue
+		}
+		out.Total++
+		if len(out.Leads) < limit {
+			l.Snippet = "" // keeps replies small; the board link has the full text
+			out.Leads = append(out.Leads, l)
+		}
+	}
+	return nil, out, nil
+}
+
+type saveLeadIn struct {
+	LeadID          string `json:"lead_id" jsonschema:"the lead's uid from list_leads"`
+	ConfirmDistinct bool   `json:"confirm_distinct,omitempty" jsonschema:"set true only after comparing with a possible_duplicate and concluding it is a different job"`
+}
+
+func (h *handlers) saveLead(ctx context.Context, _ *mcp.CallToolRequest, in saveLeadIn) (*mcp.CallToolResult, store.CreateResult, error) {
+	mode := store.CreateStrict
+	if in.ConfirmDistinct {
+		mode = store.CreateAllowSimilar
+	}
+	r, err := h.s.ActOnLead(ctx, in.LeadID, store.LeadAction{Stage: "saved"}, mode)
+	return nil, r, err
+}
+
+type skipLeadIn struct {
+	LeadID  string `json:"lead_id" jsonschema:"the lead's uid from list_leads"`
+	Reason  string `json:"reason" jsonschema:"rate, location, timezone, seniority, language, not_interested or other"`
+	Details string `json:"details,omitempty" jsonschema:"why, in the user's words; required when reason is other"`
+}
+
+func (h *handlers) skipLead(ctx context.Context, _ *mcp.CallToolRequest, in skipLeadIn) (*mcp.CallToolResult, store.CreateResult, error) {
+	r, err := h.s.ActOnLead(ctx, in.LeadID, store.LeadAction{Stage: "skipped", SkipReason: in.Reason, SkipNote: in.Details}, store.CreateAllowSimilar)
+	return nil, r, err
 }

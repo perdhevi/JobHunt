@@ -1,0 +1,87 @@
+{
+  "jobs": [
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/nusantaraai/jobs/7001001",
+      "internal_job_id": 6001001,
+      "location": {
+        "name": "Remote - APAC"
+      },
+      "metadata": [],
+      "id": 7001001,
+      "updated_at": "2026-10-15T09:00:00+07:00",
+      "requisition_id": "ENG-12",
+      "title": "Senior LLM Engineer",
+      "company_name": "Nusantara AI",
+      "first_published": "2026-10-13T10:00:00+07:00",
+      "language": "en",
+      "content": "&lt;p&gt;Build LLM agents and RAG pipelines in Python with LangGraph. You will design MCP servers and evals for our Claude-based assistant.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Python, pgvector, AWS&lt;/li&gt;&lt;li&gt;Async-first team across Asia&lt;/li&gt;&lt;/ul&gt;",
+      "departments": [
+        {
+          "id": 1,
+          "name": "Engineering",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 2,
+          "name": "Remote",
+          "location": "Remote",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/nusantaraai/jobs/7001002",
+      "internal_job_id": 6001002,
+      "location": {
+        "name": "Jakarta, Indonesia"
+      },
+      "metadata": [],
+      "id": 7001002,
+      "updated_at": "2026-10-14T09:00:00+07:00",
+      "requisition_id": "ENG-13",
+      "title": "Machine Learning Engineer (on-site)",
+      "company_name": "Nusantara AI",
+      "first_published": "2026-10-14T09:00:00+07:00",
+      "language": "en",
+      "content": "&lt;p&gt;Python, LLMs, RAG. Five days a week in our Jakarta office.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 1,
+          "name": "Engineering",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": []
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/nusantaraai/jobs/7001003",
+      "internal_job_id": 6001003,
+      "location": {
+        "name": "Remote, United States"
+      },
+      "metadata": [],
+      "id": 7001003,
+      "updated_at": "2026-10-14T09:00:00+07:00",
+      "requisition_id": "SE-4",
+      "title": "AI Solutions Engineer",
+      "company_name": "Nusantara AI",
+      "first_published": "2026-10-14T09:00:00+07:00",
+      "language": "en",
+      "content": "&lt;p&gt;Help US customers deploy LLM agents. Must be authorized to work in the United States.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 3,
+          "name": "Solutions",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": []
+    }
+  ]
+}

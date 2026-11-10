@@ -1,10 +1,10 @@
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import { Application, daysSince, Doc, fmtDay, STAGES, today } from "./api";
+import { Application, daysSince, Doc, fmtDay, skipLabel, STAGES, today } from "./api";
 
 // webLink returns the job link only if it's http(s). The server refuses other
 // schemes, and this also covers records saved before it did: React 18 still
 // renders a javascript: href.
-function webLink(url: string) {
+export function webLink(url: string) {
   try {
     const u = new URL(url);
     return u.protocol === "https:" || u.protocol === "http:" ? u.href : "";
@@ -18,11 +18,12 @@ export function docName(docs: Doc[], id: string) {
   return docs.find((d) => d.id === id)?.name ?? "(deleted version)";
 }
 
-export function Board({ apps, docs, onOpen }: { apps: Application[]; docs: Doc[]; onOpen: (id: string) => void }) {
+export function Board({ apps, docs, onOpen, showSkipped }: { apps: Application[]; docs: Doc[]; onOpen: (id: string) => void; showSkipped: boolean }) {
+  const stages = STAGES.filter((s) => showSkipped || s.id !== "skipped");
   return (
     <div className="board-scroll">
-      <div className="board">
-        {STAGES.map((s) => {
+      <div className="board" style={{ gridTemplateColumns: `repeat(${stages.length}, minmax(220px, 1fr))`, minWidth: stages.length * 230 }}>
+        {stages.map((s) => {
           const items = apps
             .filter((a) => a.stage === s.id)
             .sort((x, y) => (x.nextDate || "9999").localeCompare(y.nextDate || "9999") || y.updatedAt - x.updatedAt);
@@ -104,6 +105,7 @@ export function CardBody({ a, docs }: { a: Application; docs: Doc[] }) {
         <span className={"chip " + (a.track === "fulltime" ? "ft" : "up")}>{a.track === "fulltime" ? "Full-time" : "Contract"}</span>
         {a.source && <span className="chip">{a.source}</span>}
         {a.outcome && <span className={"chip " + (a.outcome === "Accepted" ? "ft" : "bad")}>{a.outcome}</span>}
+        {a.stage === "skipped" && <span className="chip bad">{skipLabel(a.skipReason)}</span>}
         {a.due && !late && <span className="chip warn">Follow up</span>}
         {(a.letterId || a.coverFile || a.letterText) && (
           <span className="chip lt" title={a.coverFile ? `Cover letter sent: ${a.coverFile.name}` : "Cover letter sent"}>
@@ -116,9 +118,10 @@ export function CardBody({ a, docs }: { a: Application; docs: Doc[] }) {
           </span>
         )}
       </div>
+      {a.stage === "skipped" && a.skipNote && <div className="skipnote">{a.skipNote}</div>}
       <div className="meta">
-        <span>{a.applied ? "Applied " + fmtDay(a.applied) : "Not applied yet"}</span>
-        <span>{d != null && a.stage !== "closed" ? d + "d" : ""}</span>
+        <span>{a.stage === "skipped" ? "Skipped " + fmtDay(a.skipped) : a.applied ? "Applied " + fmtDay(a.applied) : "Not applied yet"}</span>
+        <span>{d != null && a.stage !== "closed" && a.stage !== "skipped" ? d + "d" : ""}</span>
       </div>
       <div className="ref">+{a.ref}</div>
       {(a.nextStep || a.nextDate) && (
