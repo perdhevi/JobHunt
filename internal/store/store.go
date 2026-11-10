@@ -86,6 +86,88 @@ CREATE TABLE auth_marks (
   at      INTEGER NOT NULL, -- unix ms, when first recorded
   expires INTEGER NOT NULL  -- unix ms, after which the row means nothing
 );
+`, `
+-- The skipped stage, with why. SQLite can't change a CHECK constraint, so the
+-- table is rebuilt; nothing references it, so ids and refs carry over as is.
+CREATE TABLE applications_v3 (
+  id             TEXT PRIMARY KEY,
+  ref            TEXT NOT NULL,
+  company        TEXT NOT NULL,
+  role           TEXT NOT NULL,
+  track          TEXT NOT NULL CHECK (track IN ('fulltime','contract')),
+  source         TEXT NOT NULL DEFAULT '',
+  stage          TEXT NOT NULL CHECK (stage IN ('saved','applied','screening','interview','offer','closed','skipped')),
+  outcome        TEXT NOT NULL DEFAULT '',
+  applied        TEXT NOT NULL DEFAULT '',
+  comp           TEXT NOT NULL DEFAULT '',
+  next_step      TEXT NOT NULL DEFAULT '',
+  next_date      TEXT NOT NULL DEFAULT '',
+  contact        TEXT NOT NULL DEFAULT '',
+  url            TEXT NOT NULL DEFAULT '',
+  notes          TEXT NOT NULL DEFAULT '',
+  letter_id      TEXT NOT NULL DEFAULT '',
+  letter_text    TEXT NOT NULL DEFAULT '',
+  resume_id      TEXT NOT NULL DEFAULT '',
+  cover_file_id  TEXT REFERENCES files(id),
+  resume_file_id TEXT REFERENCES files(id),
+  skip_reason    TEXT NOT NULL DEFAULT '',
+  skip_note      TEXT NOT NULL DEFAULT '',
+  skipped        TEXT NOT NULL DEFAULT '',
+  url_key        TEXT NOT NULL DEFAULT '',
+  identity_key   TEXT NOT NULL DEFAULT '',
+  allow_dup      INTEGER NOT NULL DEFAULT 0,
+  version        INTEGER NOT NULL DEFAULT 1,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+);
+INSERT INTO applications_v3 (id, ref, company, role, track, source, stage, outcome, applied, comp, next_step, next_date,
+  contact, url, notes, letter_id, letter_text, resume_id, cover_file_id, resume_file_id, url_key, identity_key, allow_dup,
+  version, created_at, updated_at)
+SELECT id, ref, company, role, track, source, stage, outcome, applied, comp, next_step, next_date,
+  contact, url, notes, letter_id, letter_text, resume_id, cover_file_id, resume_file_id, url_key, identity_key, allow_dup,
+  version, created_at, updated_at FROM applications;
+DROP TABLE applications;
+ALTER TABLE applications_v3 RENAME TO applications;
+CREATE UNIQUE INDEX applications_url_key ON applications(url_key) WHERE url_key <> '' AND allow_dup = 0;
+CREATE UNIQUE INDEX applications_identity_key ON applications(identity_key) WHERE identity_key <> '' AND allow_dup = 0;
+CREATE INDEX applications_ref ON applications(ref);
+CREATE INDEX applications_stage ON applications(stage);
+
+-- Job Radar. A lead is a scored listing from a job board. Acting on it (save,
+-- applied, skip) creates an application, and application_id points at it. No
+-- foreign key: deleting the application lets the lead show again, as Radar did.
+CREATE TABLE radar_leads (
+  uid            TEXT PRIMARY KEY, -- source:id
+  source         TEXT NOT NULL,
+  source_name    TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  company        TEXT NOT NULL,
+  url            TEXT NOT NULL,
+  original_url   TEXT NOT NULL DEFAULT '',
+  location       TEXT NOT NULL DEFAULT '',
+  salary         TEXT NOT NULL DEFAULT '',
+  posted         TEXT NOT NULL DEFAULT '', -- YYYY-MM-DD
+  score          INTEGER NOT NULL,
+  hits           TEXT NOT NULL DEFAULT '[]', -- JSON arrays
+  flags          TEXT NOT NULL DEFAULT '[]',
+  also_on        TEXT NOT NULL DEFAULT '[]',
+  alt_uids       TEXT NOT NULL DEFAULT '[]',
+  snippet        TEXT NOT NULL DEFAULT '',
+  antispam       TEXT NOT NULL DEFAULT '',
+  first_seen     TEXT NOT NULL, -- YYYY-MM-DD
+  application_id TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX radar_leads_first_seen ON radar_leads(first_seen);
+-- Listing ids already scored, so each run only looks at new ones.
+CREATE TABLE radar_seen (uid TEXT PRIMARY KEY, seen TEXT NOT NULL);
+-- Skills each relevant listing asked for, for the skill-gap report.
+CREATE TABLE radar_skills (
+  uid     TEXT PRIMARY KEY,
+  date    TEXT NOT NULL,
+  title   TEXT NOT NULL,
+  company TEXT NOT NULL,
+  skills  TEXT NOT NULL -- JSON array
+);
 `}
 
 // Sentinel errors, mapped to HTTP statuses and MCP results by the callers.

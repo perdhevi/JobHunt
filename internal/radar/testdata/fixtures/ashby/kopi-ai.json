@@ -1,0 +1,76 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "5e0c2d4a-2222-4c1b-8f0e-000000000001",
+      "title": "Applied AI Engineer (Agents)",
+      "department": "Engineering",
+      "team": "Applied AI",
+      "employmentType": "FullTime",
+      "location": "Remote - Asia",
+      "secondaryLocations": [
+        {
+          "location": "Indonesia",
+          "address": {
+            "postalAddress": {
+              "addressCountry": "Indonesia"
+            }
+          }
+        }
+      ],
+      "shouldDisplayCompensationOnJobPostings": true,
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "publishedAt": "2026-10-14T03:00:00.000+00:00",
+      "jobUrl": "https://jobs.ashbyhq.com/kopi-ai/5e0c2d4a-2222-4c1b-8f0e-000000000001",
+      "applyUrl": "https://jobs.ashbyhq.com/kopi-ai/5e0c2d4a-2222-4c1b-8f0e-000000000001/application",
+      "descriptionHtml": "<p>Ship LLM agents with tool use and MCP. Python, LangGraph, evals, Ollama for local models.</p>",
+      "descriptionPlain": "Ship LLM agents with tool use and MCP.",
+      "compensation": {
+        "compensationTierSummary": "$70K – $95K • Offers Equity",
+        "scrapeableCompensationSalarySummary": "$70K - $95K",
+        "compensationTiers": []
+      },
+      "address": null
+    },
+    {
+      "id": "5e0c2d4a-2222-4c1b-8f0e-000000000002",
+      "title": "LLM Platform Engineer",
+      "department": "Engineering",
+      "team": "Platform",
+      "employmentType": "FullTime",
+      "location": "Singapore",
+      "secondaryLocations": [],
+      "isListed": true,
+      "isRemote": false,
+      "workplaceType": "OnSite",
+      "publishedAt": "2026-10-14T03:00:00.000+00:00",
+      "jobUrl": "https://jobs.ashbyhq.com/kopi-ai/5e0c2d4a-2222-4c1b-8f0e-000000000002",
+      "applyUrl": "https://jobs.ashbyhq.com/kopi-ai/5e0c2d4a-2222-4c1b-8f0e-000000000002/application",
+      "descriptionHtml": "<p>Python, LLMs, RAG in our Singapore office.</p>",
+      "descriptionPlain": "",
+      "compensation": {},
+      "address": null
+    },
+    {
+      "id": "5e0c2d4a-2222-4c1b-8f0e-000000000003",
+      "title": "Prompt Engineer (internal pipeline)",
+      "department": "Engineering",
+      "team": "Applied AI",
+      "employmentType": "FullTime",
+      "location": "Remote",
+      "secondaryLocations": [],
+      "isListed": false,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "publishedAt": "2026-10-14T03:00:00.000+00:00",
+      "jobUrl": "https://jobs.ashbyhq.com/kopi-ai/5e0c2d4a-2222-4c1b-8f0e-000000000003",
+      "applyUrl": "",
+      "descriptionHtml": "<p>Unlisted.</p>",
+      "descriptionPlain": "",
+      "compensation": {},
+      "address": null
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "_comment": "Skill-gap tracking. 'have' and 'learning' are your profile; every other skill counts as a gap. Patterns are case-insensitive regexes run on title + description.",
+  "window_days": 90,
+  "min_jobs_for_report": 5,
+  "relevant_title": "engineer|developer|\\bdev\\b|support|solutions?|architect|\\bai\\b|\\bml\\b|\\bllm|machine learning|data|devops|platform|backend|back-end|full[- ]?stack|integration|automation|sre\\b",
+  "profile": {
+    "have": [
+      "Python",
+      "C++",
+      "C#/.NET",
+      "Java",
+      "Swift",
+      "JavaScript",
+      "AWS",
+      "LLM apps",
+      "LangGraph",
+      "MCP",
+      "RAG",
+      "Vector DB / embeddings",
+      "Local LLMs",
+      "Multi-agent / agents",
+      "Unity",
+      "Troubleshooting / RCA",
+      "REST APIs",
+      "SQL",
+      "OpenAI / Anthropic APIs"
+    ],
+    "learning": [
+      "Go",
+      "PostgreSQL"
+    ]
+  },
+  "skills": {
+    "Languages": {
+      "Python": "\\bpython\\b",
+      "TypeScript": "\\btypescript\\b",
+      "JavaScript": "\\bjavascript\\b|\\bnode\\.?js\\b",
+      "Go": "\\bgolang\\b|\\bgo (developer|engineer|services?)\\b|\\b(in|with|and|or) go\\b|(?<=, )go\\b|\\bgo(?=, )",
+      "Rust": "\\brust\\b",
+      "Java": "\\bjava\\b(?!script)",
+      "C#/.NET": "c#|\\.net\\b",
+      "C++": "c\\+\\+",
+      "Swift": "\\bswift\\b",
+      "Kotlin": "\\bkotlin\\b",
+      "Ruby": "\\bruby\\b|\\brails\\b",
+      "PHP": "\\bphp\\b",
+      "SQL": "\\bsql\\b"
+    },
+    "AI / LLM": {
+      "LLM apps": "\\bllms?\\b|large language models?|generative ai|gen ?ai",
+      "RAG": "\\brag\\b|retrieval[- ]augmented",
+      "LangChain": "\\blangchain\\b",
+      "LangGraph": "\\blanggraph\\b",
+      "LlamaIndex": "\\bllama ?index\\b",
+      "Multi-agent / agents": "\\bagentic\\b|\\bai agents?\\b|multi[- ]agent|crewai|autogen",
+      "MCP": "model context protocol|\\bmcp\\b",
+      "OpenAI / Anthropic APIs": "openai|anthropic|claude api|gpt-?\\d",
+      "Vector DB / embeddings": "vector (search|database|store|db)|pgvector|qdrant|pinecone|weaviate|chroma|\\bembeddings?\\b",
+      "Local LLMs": "ollama|llama\\.cpp|vllm|on-device|local (llm|model)s?",
+      "Evals": "\\bevals?\\b|evaluation (framework|harness|pipeline)s?|llm evaluation",
+      "Fine-tuning": "fine[- ]?tun",
+      "PyTorch / TensorFlow": "pytorch|tensorflow|\\bjax\\b",
+      "Hugging Face": "hugging ?face|transformers library",
+      "Prompt engineering": "prompt engineering|prompt design"
+    },
+    "Cloud / infra": {
+      "AWS": "\\baws\\b|amazon web services",
+      "GCP": "\\bgcp\\b|google cloud",
+      "Azure": "\\bazure\\b",
+      "Docker": "\\bdocker\\b|containeri[sz]",
+      "Kubernetes": "kubernetes|\\bk8s\\b",
+      "Terraform / IaC": "terraform|infrastructure[- ]as[- ]code|\\biac\\b|pulumi",
+      "CI/CD": "ci/cd|github actions|gitlab ci|jenkins|continuous (integration|delivery|deployment)",
+      "Linux": "\\blinux\\b",
+      "Observability": "datadog|grafana|prometheus|opentelemetry|observability"
+    },
+    "Data": {
+      "PostgreSQL": "postgres",
+      "MongoDB": "mongo",
+      "Redis": "\\bredis\\b",
+      "Kafka / queues": "kafka|rabbitmq|\\bsqs\\b|pub/?sub",
+      "Spark / Databricks": "\\bspark\\b|databricks",
+      "Airflow / dbt": "airflow|\\bdbt\\b|dagster|prefect|temporal"
+    },
+    "Web / APIs": {
+      "React": "\\breact\\b",
+      "FastAPI / Django / Flask": "fastapi|django|flask",
+      "REST APIs": "\\brest(ful)?\\b|\\bapis?\\b",
+      "GraphQL": "graphql"
+    },
+    "Support / delivery": {
+      "Troubleshooting / RCA": "troubleshoot|root cause|reproduce|incident (management|response)",
+      "Customer-facing": "customer[- ]facing|client[- ]facing|work(ing)? (directly )?with customers",
+      "Unity": "\\bunity\\b"
+    }
+  }
+}

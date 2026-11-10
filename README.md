@@ -146,9 +146,12 @@ In Docker, the `JOBHUNT_*` variables in `.env` always win over `config.json`, ev
 | `add_application` | Add a job. Refuses duplicates, so retries are safe. |
 | `mark_sent` | Record that an application went out. A repeat call changes nothing. |
 | `update_application` | Change stage, next step, outcome or notes. |
+| `skip_application` | Move a job to Skipped, with the reason and details. |
 | `get_application`, `list_applications` | Read records, by id, `+ref` or filter. |
 | `list_follow_ups`, `pipeline_summary` | What is due, and the headline numbers. |
 | `list_documents` | Cover letter and resume versions. |
+| `list_leads` | Job Radar's open leads, best score first. |
+| `save_lead`, `skip_lead` | Put a lead on the board as saved, or skip it with a reason. |
 
 There is deliberately no delete tool. Deleting happens only in the UI.
 
@@ -159,6 +162,7 @@ There is deliberately no delete tool. Deleting happens only in the UI.
 | `new` | Nothing similar | true | Creates |
 | `already_tracked` | Same job, not sent yet | true | Refuses, returns the existing record |
 | `already_sent` | Same job, already sent | false | Refuses |
+| `skipped` | Same job, skipped. The message gives the reason and details. | false | Refuses |
 | `possible_duplicate` | Same company, similar role | false | Refuses unless `confirm_distinct=true` |
 
 Two records are the same job when either of these match:
@@ -173,6 +177,33 @@ The check is enforced in the database too. Unique indexes cover both keys, so tw
 The guard covers what's recorded. An agent that submits a form without calling `check_application` first, or doesn't call `mark_sent` afterwards, leaves nothing to compare against. The MCP server tells clients to follow that order, and it can't enforce it.
 
 If an agent edits a record while you have it open, your save is refused with a message rather than overwriting the change.
+
+## Skipped jobs
+
+When you decide not to apply, drag the card to **Skipped**, or pick Skipped as the stage in the form. You choose a reason (rate too low, location not applicable, time zone doesn't fit, seniority mismatch, language required, not interested, or other) and can add details. Other needs details. The column is hidden until you tick **Show skipped**, and it appears while you drag a card.
+
+A skipped job stays on record so it isn't picked up again. `check_application` returns `skipped` with the reason, and adding the same job is refused. To apply after all, move the card out of Skipped.
+
+## Job Radar
+
+The **Radar** view lists leads: listings from remote-job boards and your target companies' career pages, scored against your profile. While `jobhunt serve` runs, it checks the boards once a day, soon after starting and then hourly until a board answers. **Check now** runs it at once.
+
+- **Boards.** Himalayas, Jobicy, Remote OK, We Work Remotely and Remotive, through their official public feeds only. Each board's limits are kept: Himalayas pages are fetched 2 seconds apart, Remotive is checked at most every 6 hours, and the others at most hourly. A manual run leaves out a board checked too recently. Every lead links to its board, and the page credits them all. The listings are for your own search; the boards' terms forbid republishing them.
+- **Target companies.** Paste a Greenhouse, Lever or Ashby job-board link under Radar > Settings. The board is checked once before it's added, then read daily. Only remote roles are kept, and these use a 60-day age window instead of 10.
+- **Scoring.** Keywords in the title and description add points. Restrictions such as US only, a location outside the ones you accept, or a time zone far from yours subtract points and show as warnings. Listings at or above `min_score` become leads. The same job on several boards shows once, noting the others.
+- **Acting on a lead.** Save to board, Applied, or Skip with a reason. Each creates a board record, so the job and its reposts leave the leads. Leads nobody acted on drop off after 60 days.
+- **Skill gap.** The skills relevant listings ask for over the last 90 days, marked against what you have and are learning.
+- **Settings.** Radar > Settings edits the scoring rules (`config.json`) and your skills profile (`skills.json`) in Job Radar's format, stored in the database. Patterns are checked before saving. Set `"auto_run": false` to stop the daily run.
+
+From the command line, which works while serve runs:
+
+```powershell
+.\bin\jobhunt.exe radar run                  # check the boards now and list new leads
+.\bin\jobhunt.exe radar run --dry-run --all  # re-score everything without saving
+.\bin\jobhunt.exe radar import C:\toys\job-hunt\radar
+```
+
+`radar import` brings in a Job Radar folder: its settings (unless you've already saved some here), leads, seen listings and skill history. Its skipped and applied jobs go on the board, and any already there are linked instead of duplicated. It only reads the folder, and it's safe to re-run.
 
 ## Importing
 
@@ -201,5 +232,6 @@ cd web; npm run dev         # UI with hot reload, proxied to the API
 | `internal/store` | Schema, rules, duplicate detection. Every writer goes through here. |
 | `internal/api` | REST API and loopback protection |
 | `internal/mcpserver` | MCP tools |
+| `internal/radar` | Job Radar: board adapters, scoring, skill gap, Job Radar import. `testdata/fixtures` holds offline board responses. |
 | `deploy` | VPS setup with Caddy |
 | `web/src` | React board |

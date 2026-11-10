@@ -1,24 +1,38 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
-import { api, Application, Doc, OUTCOMES, Settings, STAGES } from "./api";
+import { api, Application, Doc, OUTCOMES, Settings, Skip, skipLabel, STAGES } from "./api";
 import { Board, CardBody } from "./Board";
 import { Editor } from "./Editor";
 import { Documents } from "./Documents";
 import { ExportPanel } from "./ExportPanel";
 import { SettingsPanel } from "./SettingsPanel";
+import { SkipDialog } from "./SkipDialog";
+import { Radar } from "./Radar";
 
 const POLL_MS = 5000; // MCP clients write from other processes
 
 type Track = "all" | "fulltime" | "contract";
+type View = "board" | "radar";
 
-function loadTrack(): Track {
+function loadPref(key: string) {
   try {
-    const t = localStorage.getItem("jh-track");
-    if (t === "fulltime" || t === "contract") return t;
+    return localStorage.getItem(key);
+  } catch {
+    return null; // storage may be blocked
+  }
+}
+
+function savePref(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
   } catch {
     /* storage may be blocked */
   }
-  return "all";
+}
+
+function loadTrack(): Track {
+  const t = loadPref("jh-track");
+  return t === "fulltime" || t === "contract" ? t : "all";
 }
 
 export default function App() {
@@ -33,6 +47,9 @@ export default function App() {
   const [panel, setPanel] = useState<"docs" | "export" | "settings" | null>(null);
   const [dragging, setDragging] = useState<Application | null>(null);
   const [closing, setClosing] = useState<Application | null>(null);
+  const [skipping, setSkipping] = useState<Application | null>(null);
+  const [view, setView] = useState<View>(() => (loadPref("jh-view") === "radar" ? "radar" : "board"));
+  const [showSkipped, setShowSkipped] = useState(() => loadPref("jh-skipped") === "1");
 
   const refresh = useCallback(async () => {
     try {
@@ -84,11 +101,12 @@ export default function App() {
     };
   }, [visible]);
 
-  const move = async (a: Application, stage: string, outcome = "") => {
-    setApps((list) => list.map((x) => (x.id === a.id ? { ...x, stage, outcome } : x)));
+  const move = async (a: Application, stage: string, outcome = "", skip?: Skip) => {
+    setApps((list) => list.map((x) => (x.id === a.id ? { ...x, stage, outcome, skipReason: skip?.reason ?? "", skipNote: skip?.note ?? "" } : x)));
     try {
-      await api.moveApp(a.id, stage, outcome);
-      setStatus({ msg: `${a.company} moved to ${STAGES.find((s) => s.id === stage)?.name}.`, err: false });
+      await api.moveApp(a.id, stage, outcome, skip);
+      const why = skip ? ` (${skipLabel(skip.reason)})` : "";
+      setStatus({ msg: `${a.company} moved to ${STAGES.find((s) => s.id === stage)?.name}${why}.`, err: false });
     } catch (e) {
       setStatus({ msg: e instanceof Error ? e.message : "Couldn't move that card.", err: true });
     }
@@ -103,17 +121,31 @@ export default function App() {
     const stage = e.over?.id as string | undefined;
     if (!a || !stage || stage === a.stage) return;
     if (stage === "closed") setClosing(a);
+    else if (stage === "skipped") setSkipping(a);
     else move(a, stage);
   };
 
   const selected = editor?.id ? apps.find((a) => a.id === editor.id) ?? null : null;
+  const skippedCount = apps.filter((a) => a.stage === "skipped").length;
+  const pickView = (v: View) => {
+    setView(v);
+    savePref("jh-view", v);
+  };
 
   return (
     <div className="wrap">
       <header className="top">
         <div>
           <h1>Job Hunt Pipeline</h1>
-          <p className="sub">Every application, from saved lead to signed offer. Drag cards between stages. Agents connected over MCP show up here within seconds.</p>
+          <p className="sub">
+            {view === "board"
+              ? "Every application, from saved lead to signed offer. Drag cards between stages. Agents connected over MCP show up here within seconds."
+              : "Job Radar checks remote-job boards and your target companies once a day, scores new listings against your profile, and lists the matches here."}
+          </p>
+          <div className="seg viewseg" role="group" aria-label="View">
+            <button type="button" aria-pressed={view === "board"} onClick={() => pickView("board")}>Board</button>
+            <button type="button" aria-pressed={view === "radar"} onClick={() => pickView("radar")}>Radar</button>
+          </div>
         </div>
         <div className="hdr-actions">
           <button className="btn" onClick={() => setPanel("settings")}>Settings</button>
@@ -128,6 +160,17 @@ export default function App() {
         </div>
       </header>
 
+      {view === "radar" ? (
+        <Radar
+          onOpenApp={(id) => {
+            pickView("board");
+            setEditor({ id });
+          }}
+          onChanged={refresh}
+          onStatus={(msg, err = false) => setStatus({ msg, err })}
+        />
+      ) : (
+      <>
       <section className="stats" aria-label="Summary">
         <Stat k="In flight" v={stats.inFlight} h="applied, not yet closed" />
         <Stat k="Interviews" v={stats.interviews} h="active loops" />
@@ -177,12 +220,25 @@ export default function App() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        <label className="check toggle">
+          <input
+            type="checkbox"
+            checked={showSkipped}
+            onChange={(e) => {
+              setShowSkipped(e.target.checked);
+              savePref("jh-skipped", e.target.checked ? "1" : "0");
+            }}
+          />
+          Show skipped ({skippedCount})
+        </label>
       </div>
 
       <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
-        <Board apps={visible} docs={docs} onOpen={(id) => setEditor({ id })} />
+        <Board apps={visible} docs={docs} onOpen={(id) => setEditor({ id })} showSkipped={showSkipped || dragging !== null} />
         <DragOverlay dropAnimation={null}>{dragging && <div className="card overlay"><CardBody a={dragging} docs={docs} /></div>}</DragOverlay>
       </DndContext>
+      </>
+      )}
 
       <p className={"status" + (status.err ? " err" : "")} role="status">{status.msg}</p>
 
@@ -229,6 +285,16 @@ export default function App() {
             <div className="actions end"><button type="button" className="btn ghost" onClick={() => setClosing(null)}>Cancel</button></div>
           </div>
         </div>
+      )}
+      {skipping && (
+        <SkipDialog
+          title={skipping.company}
+          onCancel={() => setSkipping(null)}
+          onSkip={(s) => {
+            move(skipping, "skipped", "", s);
+            setSkipping(null);
+          }}
+        />
       )}
     </div>
   );

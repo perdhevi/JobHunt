@@ -20,6 +20,7 @@ import (
 	"jobhunt/internal/api"
 	"jobhunt/internal/config"
 	"jobhunt/internal/mcpserver"
+	"jobhunt/internal/radar"
 	"jobhunt/internal/remote"
 	"jobhunt/internal/store"
 	"jobhunt/web"
@@ -40,6 +41,11 @@ const usage = `jobhunt %s
   jobhunt backup [file.tar]     write the database and attachments as a tar
                                 archive, to stdout by default, while serving
   jobhunt health                ask the running server whether it's healthy
+  jobhunt radar run [--fixtures <dir>] [--all] [--dry-run]
+                                check the job boards now (serve does this daily)
+  jobhunt radar import <job-radar folder>
+                                bring in a Job Radar folder's settings, leads
+                                and skipped/applied jobs (safe to re-run)
 `
 
 // Timeouts for both listeners. Uploads are at most 20 MB and MCP replies are
@@ -73,6 +79,8 @@ func main() {
 		err = backupCmd(args)
 	case "health":
 		err = healthCmd()
+	case "radar":
+		err = radarCmd(args)
 	default:
 		fmt.Fprintf(os.Stderr, usage, version)
 		os.Exit(2)
@@ -114,8 +122,9 @@ func serve(args []string) error {
 		return err
 	}
 	h := mcpserver.HTTPHandler(mcpserver.New(s, version))
+	rd := &radar.Radar{Store: s}
 	srv := &http.Server{
-		Handler:           (&api.Server{Store: s, Config: cfg, UI: ui, MCP: h}).Handler(),
+		Handler:           (&api.Server{Store: s, Config: cfg, UI: ui, MCP: h, Radar: rd}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -130,13 +139,14 @@ func serve(args []string) error {
 	defer stop()
 	errs := make(chan error, 2)
 	go func() { errs <- srv.Serve(ln) }()
+	go rd.Loop(ctx) // checks the job boards once a day; auto_run in the radar settings turns it off
 
 	var remoteSrv *http.Server
 	if rc := cfg.RemoteMCP; rc.Listen != "" {
 		opts := remote.Options{PublicURL: rc.PublicURL, Password: rc.Password, Token: rc.Token,
 			RedirectHosts: rc.RedirectHosts, State: s}
 		if rc.Board {
-			opts.Board = (&api.Server{Store: s, Config: cfg, UI: ui}).Routes()
+			opts.Board = (&api.Server{Store: s, Config: cfg, UI: ui, Radar: rd}).Routes()
 		}
 		if opts.OAuth() {
 			if opts.Secret, err = config.AuthSecret(); err != nil {

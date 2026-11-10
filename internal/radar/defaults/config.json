@@ -1,0 +1,116 @@
+{
+  "_comment": "Job Radar settings. Sources run in the order listed; when the same job appears on several boards, the first one wins and the others are noted. auto_run checks the boards once a day while jobhunt serve is running.",
+  "user_agent": "job-radar/1.0 (personal job search; +https://github.com/perdhevi)",
+  "auto_run": true,
+  "sources": {
+    "himalayas": {
+      "enabled": true,
+      "max_pages": 15,
+      "home_utc_offset": 7,
+      "timezone_tolerance_hours": 2
+    },
+    "jobicy": {
+      "enabled": true,
+      "queries": [
+        {
+          "count": 200
+        },
+        {
+          "count": 100,
+          "geo": "apac"
+        }
+      ]
+    },
+    "remoteok": {
+      "enabled": true
+    },
+    "wwr": {
+      "enabled": true
+    },
+    "remotive": {
+      "enabled": true,
+      "limit": 300
+    },
+    "greenhouse": {
+      "enabled": true,
+      "_comment": "Target companies' own boards: {\"board-token\": \"Company name\"}. Add from the Radar settings with a careers-page URL.",
+      "companies": {},
+      "remote_only": true,
+      "max_age_days": 60,
+      "pause_seconds": 1
+    },
+    "lever": {
+      "enabled": true,
+      "_comment": "Target companies' own boards: {\"board-token\": \"Company name\"}. Add from the Radar settings with a careers-page URL.",
+      "companies": {},
+      "remote_only": true,
+      "max_age_days": 60,
+      "pause_seconds": 1
+    },
+    "ashby": {
+      "enabled": true,
+      "_comment": "Target companies' own boards: {\"board-token\": \"Company name\"}. Add from the Radar settings with a careers-page URL.",
+      "companies": {},
+      "remote_only": true,
+      "max_age_days": 60,
+      "pause_seconds": 1
+    }
+  },
+  "min_score": 6,
+  "max_age_days": 10,
+  "title_weights": {
+    "\\bai\\b": 3,
+    "\\bllms?\\b": 5,
+    "\\bagent(s|ic)?\\b": 4,
+    "\\bmcp\\b": 5,
+    "\\brag\\b": 4,
+    "gen(erative)? ?ai": 4,
+    "applied ai": 3,
+    "machine learning": 2,
+    "support engineer|technical support|support architect": 4,
+    "solutions? (engineer|architect)": 3,
+    "integration engineer|implementation engineer": 3,
+    "automation": 3,
+    "\\bpython\\b": 3,
+    "\\bc#|\\.net\\b|c\\+\\+": 2,
+    "software engineer|backend|developer": 2,
+    "prompt": 3
+  },
+  "description_weights": {
+    "langgraph|langchain|crewai|autogen|llamaindex": 3,
+    "model context protocol|\\bmcp\\b": 4,
+    "\\brag\\b|retrieval[- ]augmented": 3,
+    "\\bllms?\\b|large language model": 2,
+    "ollama|llama\\.cpp|local (llm|model)s?|on-device": 3,
+    "vector (search|database|store)|pgvector|qdrant|embeddings?": 2,
+    "\\bagents?\\b": 1,
+    "claude|anthropic|openai": 1,
+    "\\bpython\\b": 1,
+    "c\\+\\+|\\bc#|\\.net\\b|\\bswift\\b": 1,
+    "aws lambda|\\becs\\b|\\baws\\b": 1,
+    "reproduce|root cause|troubleshoot": 1
+  },
+  "tag_weights": {
+    "ai": 1,
+    "llm": 2,
+    "python": 1,
+    "customer support": 1
+  },
+  "title_exclude": "\\b(sales|account executive|sdr|bdr|designer|recruiter|marketing|nurse|teacher|dean|accountant|paralegal|clinical|data entry|virtual assistant|copywriter|video editor)\\b",
+  "restrictions": {
+    "US only": "\\b(usa|us|u\\.s\\.) only\\b|(us|u\\.s\\.|united states)[- ]?(based|residents?)? (candidates )?only|must (be|reside|live) (located |based )?in the (us|u\\.s\\.|united states)|authorized to work in the (us|u\\.s\\.|united states)|located in the (central|east|west)\\w* region of the u\\.?s",
+    "Residency required": "residency required|must be located in|must be based in|candidates based in the united states",
+    "Other country only": "looking for (philippines|india|latam|europe)[- ]based|(philippines|eu|europe|uk)[- ]based candidates",
+    "Spanish required": "fluent in spanish|spanish and english|bilingual spanish",
+    "Healthcare background required": "years of (direct )?experience with healthcare|healthcare experience"
+  },
+  "restriction_penalty": 8,
+  "location_ok": "^$|worldwide|anywhere|^remote$|asia|apac|indonesia|global",
+  "location_penalty": 6,
+  "timezone_flags": {
+    "US hours": "\\b(est|edt|pst|pdt|cst|et|pt)\\b business hours|9(:00)? ?a\\.?m\\.?.{0,12}(est|et|pst)|east coast",
+    "UK/EU hours": "uk hours|\\b(us|east coast) and (the )?uk\\b|\\bgmt\\b|cet business hours|european time ?zones?",
+    "AU hours": "\\bau(stralian)? business hours"
+  },
+  "timezone_penalty": 4
+}

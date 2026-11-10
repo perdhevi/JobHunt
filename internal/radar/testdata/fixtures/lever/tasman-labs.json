@@ -1,0 +1,88 @@
+[
+  {
+    "additional": "<div>Tasman Labs is remote-first across Asia-Pacific.</div>",
+    "additionalPlain": "Tasman Labs is remote-first across Asia-Pacific.",
+    "categories": {
+      "commitment": "Full-time",
+      "department": "Customer",
+      "location": "Remote - Asia-Pacific",
+      "team": "Support",
+      "allLocations": [
+        "Remote - Asia-Pacific"
+      ]
+    },
+    "createdAt": 1791936000000,
+    "country": "ID",
+    "description": "<div>Own escalations for our AI platform: reproduce issues, find the root cause, work with engineering.</div>",
+    "descriptionPlain": "Own escalations for our AI platform.",
+    "hostedUrl": "https://jobs.lever.co/tasmanlabs/0b6f6a52-1111-4a8e-9a55-5d3c0e8b0001",
+    "applyUrl": "https://jobs.lever.co/tasmanlabs/0b6f6a52-1111-4a8e-9a55-5d3c0e8b0001/apply",
+    "id": "0b6f6a52-1111-4a8e-9a55-5d3c0e8b0001",
+    "lists": [
+      {
+        "text": "What you'll use",
+        "content": "<li>Python and SQL</li><li>LLM APIs (Claude, OpenAI)</li><li>Zendesk</li>"
+      }
+    ],
+    "opening": "",
+    "openingPlain": "",
+    "salaryRange": {
+      "min": 60000,
+      "max": 85000,
+      "currency": "USD",
+      "interval": "per-year-salary"
+    },
+    "text": "Senior Technical Support Engineer, AI Platform",
+    "workplaceType": "remote"
+  },
+  {
+    "additional": "",
+    "additionalPlain": "",
+    "categories": {
+      "commitment": "Full-time",
+      "department": "Engineering",
+      "location": "Sydney, Australia",
+      "team": "Platform",
+      "allLocations": [
+        "Sydney, Australia"
+      ]
+    },
+    "createdAt": 1791936000000,
+    "country": "AU",
+    "description": "<div>Python and LLM agents, three days a week in Sydney.</div>",
+    "descriptionPlain": "Python and LLM agents.",
+    "hostedUrl": "https://jobs.lever.co/tasmanlabs/0b6f6a52-1111-4a8e-9a55-5d3c0e8b0002",
+    "applyUrl": "https://jobs.lever.co/tasmanlabs/0b6f6a52-1111-4a8e-9a55-5d3c0e8b0002/apply",
+    "id": "0b6f6a52-1111-4a8e-9a55-5d3c0e8b0002",
+    "lists": [],
+    "opening": "",
+    "openingPlain": "",
+    "text": "AI Agent Engineer",
+    "workplaceType": "hybrid"
+  },
+  {
+    "additional": "",
+    "additionalPlain": "",
+    "categories": {
+      "commitment": "Full-time",
+      "department": "Solutions",
+      "location": "Remote",
+      "team": "Solutions",
+      "allLocations": [
+        "Remote"
+      ]
+    },
+    "createdAt": 1791766800000,
+    "country": "ID",
+    "description": "<div>Help customers deploy RAG and agent workflows. Python, AWS.</div>",
+    "descriptionPlain": "Help customers deploy RAG and agent workflows.",
+    "hostedUrl": "https://jobs.lever.co/tasmanlabs/0b6f6a52-1111-4a8e-9a55-5d3c0e8b0003",
+    "applyUrl": "https://jobs.lever.co/tasmanlabs/0b6f6a52-1111-4a8e-9a55-5d3c0e8b0003/apply",
+    "id": "0b6f6a52-1111-4a8e-9a55-5d3c0e8b0003",
+    "lists": [],
+    "opening": "",
+    "openingPlain": "",
+    "text": "Solutions Engineer, AI Platform",
+    "workplaceType": "remote"
+  }
+]

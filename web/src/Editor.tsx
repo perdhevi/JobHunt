@@ -1,10 +1,10 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { api, ApiError, Application, CheckResult, CreateResult, Doc, OUTCOMES, SOURCES, STAGES, taggedEmail, today } from "./api";
+import { api, ApiError, Application, CheckResult, CreateResult, Doc, OUTCOMES, SKIP_REASONS, skipLabel, SOURCES, STAGES, taggedEmail, today } from "./api";
 import { FileField, FileSlot, resolveSlot, slotFrom } from "./FileField";
 
-type Draft = Pick<Application, "company" | "role" | "track" | "source" | "stage" | "outcome" | "applied" | "comp" | "nextStep" | "nextDate" | "contact" | "url" | "letterId" | "letterText" | "resumeId" | "notes">;
+type Draft = Pick<Application, "company" | "role" | "track" | "source" | "stage" | "outcome" | "applied" | "comp" | "nextStep" | "nextDate" | "contact" | "url" | "letterId" | "letterText" | "resumeId" | "notes" | "skipReason" | "skipNote" | "skipped">;
 
-const blank: Draft = { company: "", role: "", track: "fulltime", source: "LinkedIn", stage: "applied", outcome: "", applied: today(), comp: "", nextStep: "", nextDate: "", contact: "", url: "", letterId: "", letterText: "", resumeId: "", notes: "" };
+const blank: Draft = { company: "", role: "", track: "fulltime", source: "LinkedIn", stage: "applied", outcome: "", applied: today(), comp: "", nextStep: "", nextDate: "", contact: "", url: "", letterId: "", letterText: "", resumeId: "", notes: "", skipReason: "", skipNote: "", skipped: "" };
 
 interface Props {
   app: Application | null;
@@ -100,13 +100,18 @@ export function Editor({ app, docs, email, onClose, onOpenOther, onSaved, onChan
         {app && <RefBox ref_={app.ref} email={email} />}
 
         {showCheck && (
-          <div className={"dupbox " + (check.verdict === "already_sent" ? "bad" : "warn")} role="alert">
+          <div className={"dupbox " + (check.verdict === "already_sent" || check.verdict === "skipped" ? "bad" : "warn")} role="alert">
             <b>{check.message}</b>
             <ul>
               {check.matches.map((m) => (
                 <li key={m.id}>
                   <button type="button" className="linkbtn" onClick={() => onOpenOther(m.id)}>{m.company}, {m.role}</button>
-                  <span className="hint"> {STAGES.find((s) => s.id === m.stage)?.name}{m.applied ? `, applied ${m.applied}` : ""} · matched on {m.matchedOn.replace("_", " ")}</span>
+                  <span className="hint">
+                    {" "}
+                    {STAGES.find((s) => s.id === m.stage)?.name}
+                    {m.applied ? `, applied ${m.applied}` : ""}
+                    {m.stage === "skipped" && m.skipReason ? `: ${skipLabel(m.skipReason)}${m.skipNote ? ` (${m.skipNote})` : ""}` : ""} · matched on {m.matchedOn.replace("_", " ")}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -143,6 +148,21 @@ export function Editor({ app, docs, email, onClose, onOpenOther, onSaved, onChan
               {[...new Set([...OUTCOMES, draft.outcome].filter(Boolean))].map((o) => <option key={o}>{o}</option>)}
             </select>
           </Field>
+          {draft.stage === "skipped" && (
+            <fieldset className="sent skip">
+              <legend>Why it was skipped</legend>
+              <Field id="skipReason" label="Reason">
+                <select id="skipReason" required value={draft.skipReason} onChange={(e) => set("skipReason", e.target.value)}>
+                  <option value="">Choose…</option>
+                  {SKIP_REASONS.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+                </select>
+              </Field>
+              <Field id="skipNote" label={draft.skipReason === "other" ? "Details" : "Details (optional)"}>
+                <textarea id="skipNote" required={draft.skipReason === "other"} placeholder="e.g. max $35/h, needs US work authorization" value={draft.skipNote} onChange={(e) => set("skipNote", e.target.value)} />
+              </Field>
+              {draft.skipped && <span className="hint">Skipped on {draft.skipped}.</span>}
+            </fieldset>
+          )}
           <Field id="applied" label="Date applied"><input id="applied" type="date" value={draft.applied} onChange={(e) => set("applied", e.target.value)} /></Field>
           <Field id="comp" label="Salary / rate"><input id="comp" placeholder="e.g. $30/hr, $70–85k" value={draft.comp} onChange={(e) => set("comp", e.target.value)} /></Field>
           <Field id="nextStep" label="Next step" full><input id="nextStep" placeholder="e.g. Send follow-up to recruiter" value={draft.nextStep} onChange={(e) => set("nextStep", e.target.value)} /></Field>
@@ -199,8 +219,8 @@ export function Editor({ app, docs, email, onClose, onOpenOther, onSaved, onChan
 }
 
 function pick(a: Application): Draft {
-  const { company, role, track, source, stage, outcome, applied, comp, nextStep, nextDate, contact, url, letterId, letterText, resumeId, notes } = a;
-  return { company, role, track, source, stage, outcome, applied, comp, nextStep, nextDate, contact, url, letterId, letterText, resumeId, notes };
+  const { company, role, track, source, stage, outcome, applied, comp, nextStep, nextDate, contact, url, letterId, letterText, resumeId, notes, skipReason, skipNote, skipped } = a;
+  return { company, role, track, source, stage, outcome, applied, comp, nextStep, nextDate, contact, url, letterId, letterText, resumeId, notes, skipReason, skipNote, skipped };
 }
 
 function Field({ id, label, full, children }: { id: string; label: string; full?: boolean; children: React.ReactNode }) {

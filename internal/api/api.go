@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"jobhunt/internal/config"
+	"jobhunt/internal/radar"
 	"jobhunt/internal/store"
 )
 
@@ -24,6 +25,7 @@ type Server struct {
 	Config config.Config
 	UI     fs.FS
 	MCP    http.Handler
+	Radar  *radar.Radar
 }
 
 // Handler assembles the routes for the loopback listener.
@@ -49,6 +51,18 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/files/{id}", s.getFile)
 	m.HandleFunc("GET /api/settings", s.getSettings)
 	m.HandleFunc("PUT /api/settings", s.putSettings)
+	m.HandleFunc("GET /api/skip-reasons", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, store.SkipReasons)
+	})
+	if s.Radar != nil {
+		m.HandleFunc("GET /api/radar", s.radarState)
+		m.HandleFunc("POST /api/radar/run", s.radarRun)
+		m.HandleFunc("POST /api/radar/act", s.radarAct)
+		m.HandleFunc("GET /api/radar/skills", s.radarSkills)
+		m.HandleFunc("GET /api/radar/settings", s.radarSettings)
+		m.HandleFunc("PUT /api/radar/settings", s.putRadarSettings)
+		m.HandleFunc("POST /api/radar/companies", s.radarAddCompany)
+	}
 	m.HandleFunc("GET /healthz", s.health)
 	// The remote listener answers this itself, so the UI knows to offer sign-out.
 	m.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
@@ -226,12 +240,15 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) moveApp(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Stage, Outcome string }
+	var in struct{ Stage, Outcome, SkipReason, SkipNote string }
 	if !readJSON(w, r, &in) {
 		return
 	}
 	got, err := s.Store.Patch(r.Context(), r.PathValue("id"), func(a *store.Application) error {
 		a.Stage, a.Outcome = in.Stage, in.Outcome
+		if in.Stage == "skipped" {
+			a.SkipReason, a.SkipNote, a.Skipped = in.SkipReason, in.SkipNote, ""
+		}
 		return nil
 	})
 	if err != nil {
