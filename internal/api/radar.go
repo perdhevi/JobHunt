@@ -15,23 +15,73 @@ import (
 
 type radarStateDTO struct {
 	radar.Status
-	Leads []store.Lead `json:"leads"`
+	Leads []leadDTO `json:"leads"`
+}
+
+// leadSkill is a skill a listing asks for, and what you can show for it.
+type leadSkill struct {
+	Skill string `json:"skill"`
+	Proof string `json:"proof"` // proven, claimed, learning or gap
+}
+
+type leadDTO struct {
+	store.Lead
+	Skills []leadSkill `json:"skills"`
 }
 
 // radarState is everything the Radar view lists: run status and stored leads,
-// each with the board record it's on, if any.
+// each with the board record it's on, if any, and the skills it asks for.
 func (s *Server) radarState(w http.ResponseWriter, r *http.Request) {
-	st, err := s.Radar.Status(r.Context())
+	ctx := r.Context()
+	st, err := s.Radar.Status(ctx)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	leads, err := s.Store.ListLeads(r.Context())
+	leads, err := s.Store.ListLeads(ctx)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, radarStateDTO{Status: st, Leads: leads})
+	out := radarStateDTO{Status: st, Leads: make([]leadDTO, len(leads))}
+	for i, l := range leads {
+		out.Leads[i] = leadDTO{Lead: l, Skills: []leadSkill{}}
+	}
+	// Skill marks are a convenience: settings that don't parse leave them off
+	// (the header already reports the problem) instead of failing the list.
+	model, _, err := s.Radar.Skills(ctx)
+	if err == nil {
+		observed, err := s.Store.LeadSkills(ctx)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		ev, err := s.Store.ListEvidence(ctx)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		proof := map[string]int{}
+		for _, e := range ev {
+			proof[e.Skill]++
+		}
+		for i := range out.Leads {
+			l := &out.Leads[i].Lead
+			skills, ok := observed[l.UID]
+			for _, u := range l.AltUIDs {
+				if !ok {
+					skills, ok = observed[u]
+				}
+			}
+			if !ok { // recorded before skills were observed: use what's stored
+				skills = model.Extract(l.Title + "\n" + l.Snippet)
+			}
+			for _, sk := range skills {
+				out.Leads[i].Skills = append(out.Leads[i].Skills, leadSkill{sk, model.Proof(sk, proof)})
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // radarRun starts a scan in the background; the page polls radarState.
@@ -96,13 +146,82 @@ func (s *Server) radarSkills(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, fmt.Errorf("%w: %v", store.ErrInvalid, err))
 		return
 	}
+	ctx := r.Context()
 	now := time.Now()
-	obs, err := s.Store.SkillObservations(r.Context(), now.AddDate(-1, 0, 0).Format("2006-01-02"))
+	obs, err := s.Store.SkillObservations(ctx, now.AddDate(-1, 0, 0).Format("2006-01-02"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, m.Report(obs, now))
+	ev, err := s.Store.ListEvidence(ctx)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	goals, err := s.Store.ListGoals(ctx)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	rep := m.Report(obs, now)
+	m.AddProof(&rep, ev, goals)
+	writeJSON(w, http.StatusOK, rep)
+}
+
+type evidenceDTO struct {
+	Evidence []store.Evidence  `json:"evidence"`
+	Goals    []store.SkillGoal `json:"goals"`
+	Kinds    []string          `json:"kinds"`
+}
+
+func (s *Server) listEvidence(w http.ResponseWriter, r *http.Request) {
+	ev, err := s.Store.ListEvidence(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	goals, err := s.Store.ListGoals(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, evidenceDTO{Evidence: ev, Goals: goals, Kinds: store.EvidenceKinds})
+}
+
+func (s *Server) saveEvidence(w http.ResponseWriter, r *http.Request) {
+	var e store.Evidence
+	if !readJSON(w, r, &e) {
+		return
+	}
+	e.ID = r.PathValue("id")
+	got, err := s.Store.SaveEvidence(r.Context(), e)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, got)
+}
+
+func (s *Server) deleteEvidence(w http.ResponseWriter, r *http.Request) {
+	if err := s.Store.DeleteEvidence(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setGoal takes the skill in the body: names such as "CI/CD" hold slashes.
+func (s *Server) setGoal(w http.ResponseWriter, r *http.Request) {
+	var g store.SkillGoal
+	if !readJSON(w, r, &g) {
+		return
+	}
+	got, err := s.Store.SetGoal(r.Context(), g)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, got)
 }
 
 type radarSettingsDTO struct {

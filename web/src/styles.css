@@ -221,3 +221,18 @@ fieldset.sent.skip legend{color:var(--bad)}
 textarea.json{width:100%;min-height:340px;margin-top:10px;font-family:var(--mono);font-size:12px;line-height:1.45;border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:9px;resize:vertical;tab-size:2}
 .rsettings .lstats .actions{margin-top:10px}
 .lead .chip{white-space:normal;overflow-wrap:anywhere}
+
+/* skill proof */
+.proofchip{font-size:11px;border-radius:999px;padding:1px 8px;font-weight:500;white-space:nowrap;display:inline-block}
+.proofchip.proven{background:var(--accent-soft);color:var(--accent)}
+.proofchip.claimed{background:var(--warn-soft);color:var(--warn)}
+.proofchip.learning{background:var(--info-soft);color:var(--info)}
+.proofchip.gap{background:transparent;border:1px dashed var(--line);color:var(--muted)}
+.leadskills{display:grid;gap:4px}
+.lead .proofchip{white-space:normal;overflow-wrap:anywhere}
+.proofline{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.skbox{display:grid;gap:10px;border-top:1px solid var(--line);padding-top:14px}
+.skbox h3{margin:0;font-size:15px}
+.skbox .litem a{color:var(--accent)}
+.goalcell{font-size:12.5px;max-width:28ch}
+.lstats td .linkbtn{text-align:left}

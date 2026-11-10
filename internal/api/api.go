@@ -62,6 +62,11 @@ func (s *Server) Routes() http.Handler {
 		m.HandleFunc("GET /api/radar/settings", s.radarSettings)
 		m.HandleFunc("PUT /api/radar/settings", s.putRadarSettings)
 		m.HandleFunc("POST /api/radar/companies", s.radarAddCompany)
+		m.HandleFunc("GET /api/radar/evidence", s.listEvidence)
+		m.HandleFunc("POST /api/radar/evidence", s.saveEvidence)
+		m.HandleFunc("PUT /api/radar/evidence/{id}", s.saveEvidence)
+		m.HandleFunc("DELETE /api/radar/evidence/{id}", s.deleteEvidence)
+		m.HandleFunc("PUT /api/radar/goal", s.setGoal)
 	}
 	m.HandleFunc("GET /healthz", s.health)
 	// The remote listener answers this itself, so the UI knows to offer sign-out.
