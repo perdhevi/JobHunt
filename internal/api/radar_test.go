@@ -68,3 +68,36 @@ func TestRadarActOnLead(t *testing.T) {
 		t.Errorf("bad config saved: %d", w.Code)
 	}
 }
+
+func TestLeadsShowSkillProof(t *testing.T) {
+	srv, _ := newServer(t)
+	srv.Radar = &radar.Radar{Store: srv.Store}
+	h := srv.Handler()
+	ctx := context.Background()
+	srv.Store.SaveLeads(ctx, []store.Lead{{UID: "wwr:y", Source: "wwr", SourceName: "We Work Remotely", Title: "Platform Engineer",
+		Company: "Lumen", URL: "https://weworkremotely.com/remote-jobs/y", Score: 9, Snippet: "Python, Docker and Kubernetes"}}, "2026-11-10")
+	if w := do(t, h, "POST", "/api/radar/evidence", `{"skill":"Python","kind":"repo","title":"jobhunt","url":"https://github.com/perdhevi/JobHunt"}`); w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if w := do(t, h, "PUT", "/api/radar/goal", `{"skill":"CI/CD","goal":"Actions workflow","due":"2026-12-01"}`); w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	var st radarStateDTO
+	json.Unmarshal(do(t, h, "GET", "/api/radar", "").Body.Bytes(), &st)
+	got := map[string]string{}
+	for _, s := range st.Leads[0].Skills {
+		got[s.Skill] = s.Proof
+	}
+	if got["Python"] != "proven" || got["Kubernetes"] != "gap" || got["Docker"] != "gap" {
+		t.Errorf("skill marks: %v", got)
+	}
+	var rep radar.SkillReport
+	json.Unmarshal(do(t, h, "GET", "/api/radar/skills", "").Body.Bytes(), &rep)
+	found := false
+	for _, r := range rep.Mine {
+		found = found || (r.Skill == "CI/CD" && r.Goal == "Actions workflow")
+	}
+	if !found || rep.Proven != 1 {
+		t.Errorf("report: proven %d, mine %+v", rep.Proven, rep.Mine)
+	}
+}

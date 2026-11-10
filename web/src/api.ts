@@ -147,6 +147,39 @@ export interface Lead {
   antispam: string;
   firstSeen: string;
   application?: LeadApp;
+  skills: { skill: string; proof: Proof }[];
+}
+
+// What you can show for a skill: "have" with proof, "have" without, learning, or a gap.
+export type Proof = "proven" | "claimed" | "learning" | "gap";
+
+export const EVIDENCE_KINDS = [
+  { key: "project", label: "Running project" },
+  { key: "repo", label: "Code repository" },
+  { key: "certificate", label: "Certificate" },
+  { key: "course", label: "Course" },
+  { key: "writeup", label: "Write-up" },
+  { key: "work", label: "Work example" },
+] as const;
+
+export const kindLabel = (k: string) => EVIDENCE_KINDS.find((x) => x.key === k)?.label ?? k;
+
+export interface Evidence {
+  id: string;
+  skill: string;
+  kind: string;
+  title: string;
+  url: string;
+  date: string;
+  note: string;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface SkillGoal {
+  skill: string;
+  goal: string;
+  due: string;
 }
 
 export interface SourceResult {
@@ -184,6 +217,9 @@ export interface SkillRow {
   status: "have" | "learning" | "gap";
   count: number;
   share: number;
+  proof: number;
+  goal?: string;
+  due?: string;
 }
 
 export interface SkillReport {
@@ -197,6 +233,9 @@ export interface SkillReport {
   gaps: SkillRow[];
   skills: SkillRow[];
   areas: { area: string; share: number; have: number; seen: number }[];
+  mine: SkillRow[];
+  proven: number;
+  claimed: number;
 }
 
 export interface RadarSettings {
@@ -266,6 +305,11 @@ export const api = {
   radarSettings: () => request<RadarSettings>("GET", "/api/radar/settings"),
   saveRadarSettings: (s: { config?: string; skills?: string }) => request<RadarSettings>("PUT", "/api/radar/settings", s),
   radarAddCompany: (ref: string, name: string) => request<CompanyResult>("POST", "/api/radar/companies", { ref, name }),
+  evidence: () => request<{ evidence: Evidence[]; goals: SkillGoal[] }>("GET", "/api/radar/evidence"),
+  saveEvidence: (e: Partial<Evidence>) =>
+    request<Evidence>(e.id ? "PUT" : "POST", e.id ? `/api/radar/evidence/${encodeURIComponent(e.id)}` : "/api/radar/evidence", e),
+  deleteEvidence: (id: string) => request<void>("DELETE", `/api/radar/evidence/${encodeURIComponent(id)}`),
+  setGoal: (g: SkillGoal) => request<SkillGoal>("PUT", "/api/radar/goal", g),
   deleteApp: (id: string) => request<void>("DELETE", `/api/applications/${id}`),
   listDocs: () => request<Doc[]>("GET", "/api/documents"),
   saveDoc: (d: Partial<Doc>) => request<Doc>(d.id ? "PUT" : "POST", d.id ? `/api/documents/${d.id}` : "/api/documents", d),

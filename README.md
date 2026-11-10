@@ -193,6 +193,7 @@ The **Radar** view lists leads: listings from remote-job boards and your target 
 - **Scoring.** Keywords in the title and description add points. Restrictions such as US only, a location outside the ones you accept, or a time zone far from yours subtract points and show as warnings. Listings at or above `min_score` become leads. The same job on several boards shows once, noting the others.
 - **Acting on a lead.** Save to board, Applied, or Skip with a reason. Each creates a board record, so the job and its reposts leave the leads. Leads nobody acted on drop off after 60 days.
 - **Skill gap.** The skills relevant listings ask for over the last 90 days, marked against what you have and are learning.
+- **Proof.** Click a skill to record proof an employer can check: a running project, a repo, a certificate, a course, a write-up or a work example, each with a link and a line on what it shows. A skill you list as "have" with no proof shows as *claimed*, so you can see what you can back up and what is only your word. Each skill can also carry a goal and a date. Lead cards mark the skills each listing asks for as proven, claimed, learning or gap, so you know what to point to before you apply.
 - **Settings.** Radar > Settings edits the scoring rules (`config.json`) and your skills profile (`skills.json`) in Job Radar's format, stored in the database. Patterns are checked before saving. Set `"auto_run": false` to stop the daily run.
 
 From the command line, which works while serve runs:

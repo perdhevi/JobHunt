@@ -91,6 +91,10 @@ type SkillRow struct {
 	Status string `json:"status"`
 	Count  int    `json:"count"`
 	Share  int    `json:"share"` // percent of listings in the window
+	// Filled by AddProof: pieces of proof, and the plan for the skill.
+	Proof int    `json:"proof"`
+	Goal  string `json:"goal,omitempty"`
+	Due   string `json:"due,omitempty"`
 }
 
 // AreaRow totals one area of skills.
@@ -113,6 +117,107 @@ type SkillReport struct {
 	Gaps       []SkillRow `json:"gaps"`     // most requested skills you don't list, top 10
 	Skills     []SkillRow `json:"skills"`
 	Areas      []AreaRow  `json:"areas"`
+	// Mine lists the skills in your profile, plus any with proof or a goal,
+	// whether or not recent listings asked for them.
+	Mine []SkillRow `json:"mine"`
+	// Proven counts skills in your profile backed by at least one piece of proof.
+	Proven  int `json:"proven"`
+	Claimed int `json:"claimed"` // in your profile as "have", with no proof yet
+}
+
+// Proof labels a skill for a listing: "proven" (have, with proof), "claimed"
+// (have, no proof yet), "learning" or "gap".
+func (m *SkillModel) Proof(skill string, proof map[string]int) string {
+	st := m.Status(skill)
+	if st == "have" {
+		if proof[skill] > 0 {
+			return "proven"
+		}
+		return "claimed"
+	}
+	return st
+}
+
+// Extract returns the tracked skills a text names, for listings recorded
+// before skills were observed.
+func (m *SkillModel) Extract(text string) []string {
+	out := []string{}
+	for _, n := range m.names {
+		if matches(m.patterns[n], text) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// AddProof fills in proof counts and goals, and lists your own skills.
+func (m *SkillModel) AddProof(r *SkillReport, ev []store.Evidence, goals []store.SkillGoal) {
+	proof := map[string]int{}
+	for _, e := range ev {
+		proof[e.Skill]++
+	}
+	goal := map[string]store.SkillGoal{}
+	for _, g := range goals {
+		goal[g.Skill] = g
+	}
+	fill := func(rows []SkillRow) {
+		for i := range rows {
+			rows[i].Proof = proof[rows[i].Skill]
+			rows[i].Goal, rows[i].Due = goal[rows[i].Skill].Goal, goal[rows[i].Skill].Due
+		}
+	}
+	fill(r.Skills)
+	fill(r.Gaps)
+
+	seen := map[string]SkillRow{}
+	for _, row := range r.Skills {
+		seen[row.Skill] = row
+	}
+	mine := map[string]bool{}
+	for s := range m.have {
+		mine[s] = true
+	}
+	for s := range m.lrn {
+		mine[s] = true
+	}
+	for s := range proof {
+		mine[s] = true
+	}
+	for s := range goal {
+		mine[s] = true
+	}
+	r.Mine = []SkillRow{}
+	r.Proven, r.Claimed = 0, 0
+	for s := range mine {
+		row, ok := seen[s]
+		if !ok {
+			area := m.categoryOf[s]
+			if area == "" {
+				area = "(not tracked)"
+			}
+			row = SkillRow{Skill: s, Area: area, Status: m.Status(s)}
+			row.Proof, row.Goal, row.Due = proof[s], goal[s].Goal, goal[s].Due
+		}
+		if row.Status == "have" {
+			if row.Proof > 0 {
+				r.Proven++
+			} else {
+				r.Claimed++
+			}
+		}
+		r.Mine = append(r.Mine, row)
+	}
+	rank := map[string]int{"have": 0, "learning": 1, "gap": 2}
+	sort.Slice(r.Mine, func(i, j int) bool {
+		a, b := r.Mine[i], r.Mine[j]
+		if rank[a.Status] != rank[b.Status] {
+			return rank[a.Status] < rank[b.Status]
+		}
+		if a.Count != b.Count {
+			return a.Count > b.Count
+		}
+		return a.Skill < b.Skill
+	})
 }
 
 func pct(n, d int) int {

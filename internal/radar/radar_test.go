@@ -2,6 +2,7 @@ package radar
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -192,5 +193,42 @@ func TestHelpers(t *testing.T) {
 	}
 	if externalURL("https://himalayas.app/x", "himalayas.app") != "" || externalURL("javascript:alert(1)") != "" {
 		t.Error("externalURL let a board or non-web link through")
+	}
+}
+
+func TestProofStatus(t *testing.T) {
+	m, err := ParseSkills(DefaultSkills)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := []store.SkillObservation{}
+	for i := 0; i < 6; i++ {
+		obs = append(obs, store.SkillObservation{UID: fmt.Sprint(i), Date: fixtureNow.Format("2006-01-02"), Skills: []string{"Python", "Docker", "Kubernetes"}})
+	}
+	rep := m.Report(obs, fixtureNow)
+	ev := []store.Evidence{{Skill: "Python", Kind: "repo", Title: "x"}, {Skill: "Docker", Kind: "project", Title: "y"}}
+	m.AddProof(&rep, ev, []store.SkillGoal{{Skill: "Kubernetes", Goal: "k3s deploy", Due: "2026-12-01"}})
+
+	proof := map[string]int{"Python": 1}
+	for skill, want := range map[string]string{"Python": "proven", "Swift": "claimed", "Go": "learning", "Kubernetes": "gap"} {
+		if got := m.Proof(skill, proof); got != want {
+			t.Errorf("Proof(%s) = %s, want %s", skill, got, want)
+		}
+	}
+	byName := map[string]SkillRow{}
+	for _, r := range rep.Mine {
+		byName[r.Skill] = r
+	}
+	if r := byName["Docker"]; r.Status != "gap" || r.Proof != 1 {
+		t.Errorf("a gap with proof should be listed as yours: %+v", r)
+	}
+	if r := byName["Kubernetes"]; r.Goal != "k3s deploy" || r.Count != 6 {
+		t.Errorf("goal or count missing: %+v", r)
+	}
+	if r, ok := byName["Swift"]; !ok || r.Proof != 0 || r.Count != 0 {
+		t.Errorf("a profile skill no listing asked for should still be listed: %+v", r)
+	}
+	if rep.Proven != 1 || rep.Claimed != len(m.have)-1 {
+		t.Errorf("proven %d, claimed %d", rep.Proven, rep.Claimed)
 	}
 }

@@ -168,6 +168,28 @@ CREATE TABLE radar_skills (
   company TEXT NOT NULL,
   skills  TEXT NOT NULL -- JSON array
 );
+`, `
+-- Proof behind a skill: something an employer can check. Keyed by the skill's
+-- name in skills.json, without a foreign key, so renaming a skill there
+-- leaves its proof listed under the old name rather than deleting it.
+CREATE TABLE skill_evidence (
+  id         TEXT PRIMARY KEY,
+  skill      TEXT NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('project','repo','certificate','course','writeup','work')),
+  title      TEXT NOT NULL,
+  url        TEXT NOT NULL DEFAULT '',
+  date       TEXT NOT NULL DEFAULT '', -- YYYY-MM-DD, when it was done
+  note       TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX skill_evidence_skill ON skill_evidence(skill);
+-- What you plan to do about a skill, and by when.
+CREATE TABLE skill_goals (
+  skill TEXT PRIMARY KEY,
+  goal  TEXT NOT NULL,
+  due   TEXT NOT NULL DEFAULT ''
+);
 `}
 
 // Sentinel errors, mapped to HTTP statuses and MCP results by the callers.

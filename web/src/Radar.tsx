@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { api, ApiError, CreateResult, fmtDay, Lead, RadarSettings, RadarState, Skip, skipLabel, SkillReport, STAGES, today, daysSince } from "./api";
+import { api, ApiError, CreateResult, fmtDay, Lead, Proof, RadarSettings, RadarState, Skip, skipLabel, SkillReport, SkillRow, STAGES, today, daysSince } from "./api";
+import { PROOF_LABEL, SkillPanel } from "./SkillPanel";
 import { webLink } from "./Board";
 import { SkipDialog } from "./SkipDialog";
 
@@ -315,6 +316,7 @@ function LeadCard({ l, busy, conflict, onAct, onForce, onOpenApp }: {
         </div>
       )}
       {l.hits.length > 0 && <div className="hits">Matched: {l.hits.join(", ")}</div>}
+      {l.skills.length > 0 && <LeadSkills skills={l.skills} />}
       {l.snippet && <p className="snippet">{l.snippet}…</p>}
       {l.antispam && <div className="hint">Apply note: the post asks you to mention <b>{l.antispam}</b>.</div>}
       {conflict && (
@@ -376,32 +378,52 @@ function Credits({ state }: { state: RadarState | null }) {
   );
 }
 
-const STATUS_ICON = { have: "✅ have", learning: "📘 learning", gap: "❌ gap" } as const;
+function rowProof(r: SkillRow): Proof {
+  return r.status === "have" ? (r.proof > 0 ? "proven" : "claimed") : r.status;
+}
 
 function SkillGap() {
   const [r, setR] = useState<SkillReport | null>(null);
   const [err, setErr] = useState("");
-  useEffect(() => {
+  const [open, setOpen] = useState<SkillRow | null>(null);
+  const load = useCallback(() => {
     api.radarSkills().then(setR).catch((e) => setErr(e instanceof Error ? e.message : "Couldn't load the report."));
   }, []);
+  useEffect(load, [load]);
   if (err) return <p className="status err">{err}</p>;
   if (!r) return <p className="lempty">Loading…</p>;
+  const yours = r.proven + r.claimed;
   return (
     <div className="skillgap">
       <p className="sub">
-        Based on <b>{r.listings}</b> relevant listings from the last {r.windowDays} days, across every board. A listing counts as relevant when its title looks like a role you'd consider (relevant_title in the skills settings).
+        Based on <b>{r.listings}</b> relevant listings from the last {r.windowDays} days, across every board. A listing counts as relevant when its title looks like a role you'd consider (relevant_title in the skills settings). Click a skill to add proof or a goal.
       </p>
-      {!r.enough ? (
-        <p className="lempty">Not enough data yet ({r.listings} listings, need {r.minJobs}). The report fills in as the daily runs collect more.</p>
+      <section className="stats">
+        <div className="stat">
+          <div className="k">Coverage</div>
+          <div className="v">{r.enough ? `${r.coverage}%` : "—"}</div>
+          <div className="h">of a typical listing's skills you have</div>
+        </div>
+        <div className={"stat" + (r.claimed ? " alert" : "")}>
+          <div className="k">Proven</div>
+          <div className="v">{r.proven} / {yours}</div>
+          <div className="h">{r.claimed ? `${r.claimed} skills you list have no proof yet` : "every skill you list has proof"}</div>
+        </div>
+        <div className="stat">
+          <div className="k">Top gap</div>
+          <div className="v sm">{r.gaps[0]?.skill ?? "—"}</div>
+          <div className="h">{r.gaps[0] ? `${r.gaps[0].share}% of listings` : r.enough ? "none" : "not enough data yet"}</div>
+        </div>
+      </section>
+      {r.enough ? (
+        <SkillTable title="Top gaps to close" rows={r.gaps} onOpen={setOpen} />
       ) : (
+        <p className="lempty">Not enough listings for the gap tables yet ({r.listings}, need {r.minJobs}). They fill in as the daily runs collect more.</p>
+      )}
+      <SkillTable title="Your skills and their proof" hint="Skills in your profile, plus any you've added proof or a goal for." rows={r.mine} onOpen={setOpen} />
+      {r.enough && (
         <>
-          <section className="stats">
-            <div className="stat"><div className="k">Coverage</div><div className="v">{r.coverage}%</div><div className="h">of a typical listing's skills you have</div></div>
-            <div className="stat"><div className="k">Listings</div><div className="v">{r.listings}</div><div className="h">{r.asked} named a tracked skill</div></div>
-            <div className="stat alert"><div className="k">Top gap</div><div className="v sm">{r.gaps[0]?.skill ?? "—"}</div><div className="h">{r.gaps[0] ? `${r.gaps[0].share}% of listings` : "none"}</div></div>
-          </section>
-          <SkillTable title="Top gaps to close" rows={r.gaps} showArea />
-          <SkillTable title="All tracked skills" rows={r.skills} showStatus />
+          <SkillTable title="All skills listings ask for" rows={r.skills} onOpen={setOpen} />
           <section className="lstats">
             <h2>By area</h2>
             <div className="tbl-wrap">
@@ -417,14 +439,16 @@ function SkillGap() {
           </section>
         </>
       )}
+      {open && <SkillPanel row={open} onClose={() => setOpen(null)} onChanged={load} />}
     </div>
   );
 }
 
-function SkillTable({ title, rows, showArea, showStatus }: { title: string; rows: SkillReport["skills"]; showArea?: boolean; showStatus?: boolean }) {
+function SkillTable({ title, hint, rows, onOpen }: { title: string; hint?: string; rows: SkillRow[]; onOpen: (r: SkillRow) => void }) {
   return (
     <section className="lstats">
       <h2>{title}</h2>
+      {hint && <p className="hint flush">{hint}</p>}
       {rows.length === 0 ? (
         <p className="lempty">None.</p>
       ) : (
@@ -433,27 +457,54 @@ function SkillTable({ title, rows, showArea, showStatus }: { title: string; rows
             <thead>
               <tr>
                 <th>Skill</th>
-                {showArea && <th>Area</th>}
-                {showStatus && <th>Status</th>}
-                <th className="num">Share</th>
-                <th className="num">Listings</th>
+                <th>Status</th>
+                <th className="num">Asked for</th>
+                <th className="num">Proof</th>
+                <th>Goal</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((s) => (
-                <tr key={s.skill}>
-                  <td>{s.skill}</td>
-                  {showArea && <td>{s.area}</td>}
-                  {showStatus && <td>{STATUS_ICON[s.status]}</td>}
-                  <td className="num"><span className="rbar" style={{ width: Math.max(2, s.share) * 0.8 }} />{s.share}%</td>
-                  <td className="num">{s.count}</td>
-                </tr>
-              ))}
+              {rows.map((s) => {
+                const p = rowProof(s);
+                return (
+                  <tr key={s.skill}>
+                    <td><button type="button" className="linkbtn" onClick={() => onOpen(s)}>{s.skill}</button><div className="hint">{s.area}</div></td>
+                    <td><span className={"proofchip " + p}>{PROOF_LABEL[p]}</span></td>
+                    <td className="num">{s.count > 0 ? <><span className="rbar" style={{ width: Math.max(2, s.share) * 0.8 }} />{s.share}%</> : "—"}</td>
+                    <td className="num">{s.proof || "—"}</td>
+                    <td className="goalcell">{s.goal ? <>{s.goal}{s.due && <span className="hint"> · by {fmtDay(s.due)}</span>}</> : ""}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
     </section>
+  );
+}
+
+const PROOF_TITLE = {
+  proven: "You have this, with proof to point to",
+  claimed: "In your profile, but no proof recorded yet",
+  learning: "You're learning this",
+  gap: "Not in your profile",
+} as const;
+
+// LeadSkills marks the skills a listing asks for by what you can show for each.
+function LeadSkills({ skills }: { skills: Lead["skills"] }) {
+  const proven = skills.filter((s) => s.proof === "proven").length;
+  return (
+    <div className="leadskills">
+      <span className="hint">Proof for {proven} of {skills.length} skills asked:</span>
+      <div className="chips">
+        {skills.map((s) => (
+          <span key={s.skill} className={"proofchip " + s.proof} title={PROOF_TITLE[s.proof]}>
+            {s.proof === "proven" ? "✓ " : ""}{s.skill}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 
